@@ -203,10 +203,10 @@ You can leave it on during iteration. See the next section for details.
 
 ### End to end scoring
 
-Provide a path to a resume PDF.
+Place exactly one resume file in the `resume/` folder (any filename), then run:
 
 ```bash
-$ python score.py /path/to/resume.pdf
+$ python score.py
 ```
 
 What happens:

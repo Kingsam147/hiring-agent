@@ -19,6 +19,7 @@ from models import (
     SkillsSection,
     ProjectsSection,
     AwardsSection,
+    GeminiDailyQuotaExceeded,
 )
 from llm_utils import initialize_llm_provider, extract_json_from_response
 from pymupdf_rag import to_markdown
@@ -129,6 +130,11 @@ class PDFHandler:
                 logger.error(f"Raw response: {response_text}")
                 return None
 
+        except GeminiDailyQuotaExceeded:
+            # Budget exhausted mid-extraction: abort the run loudly rather than
+            # returning None, which would let _extract_all_sections_separately
+            # produce (and score.py cache) a resume with a missing section.
+            raise
         except Exception as e:
             logger.error(f"❌ Error calling LLM for {section_name} section: {e}")
             return None
@@ -192,6 +198,8 @@ class PDFHandler:
     def extract_json_from_text(self, resume_text: str) -> Optional[JSONResume]:
         try:
             return self._extract_all_sections_separately(resume_text)
+        except GeminiDailyQuotaExceeded:
+            raise
         except Exception as e:
             logger.error(f"Error calling Ollama: {e}")
             return None
@@ -212,6 +220,8 @@ class PDFHandler:
             logger.debug("🔄 Extracting all sections separately...")
             return self._extract_all_sections_separately(text_content)
 
+        except GeminiDailyQuotaExceeded:
+            raise
         except Exception as e:
             logger.error(f"❌ Error during PDF to JSON extraction: {e}")
             return None

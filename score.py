@@ -5,12 +5,18 @@ import logging
 import csv
 from pdf import PDFHandler
 from github import fetch_and_display_github_info
-from models import JSONResume, EvaluationData, JobEvaluationData, ParseabilityResult
+from models import (
+    JSONResume,
+    EvaluationData,
+    JobEvaluationData,
+    GeminiDailyQuotaExceeded,
+    ModelProvider,
+    get_gemini_daily_usage_line,
+)
 from typing import Optional
 from evaluator import ResumeEvaluator, JobDescriptionEvaluator
 from pathlib import Path
-from prompt import DEFAULT_MODEL, MODEL_PARAMETERS
-from ats_parseability import scan_pdf_parseability
+from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, MODEL_PROVIDER_MAPPING
 from weight_profiles import WEIGHT_PROFILES, DEFAULT_PROFILE, suggest_profile
 from transform import (
     transform_evaluation_response,
@@ -28,8 +34,33 @@ logging.basicConfig(
     format="%(asctime)s - %(name)5s - %(lineno)5d - %(funcName)33s - %(levelname)5s - %(message)s",
 )
 
-RESUME_PATH = "resume.pdf"
+RESUME_FOLDER = "resume"
 JOB_DESCRIPTION_PATH = "job_description.txt"
+
+
+def find_resume_file(folder: str = RESUME_FOLDER) -> str:
+    if not os.path.isdir(folder):
+        print(f"Error: '{folder}/' folder not found. Create it and place your resume file inside.")
+        sys.exit(1)
+
+    files = [
+        entry
+        for entry in sorted(os.listdir(folder))
+        if os.path.isfile(os.path.join(folder, entry)) and not entry.startswith(".")
+    ]
+
+    if not files:
+        print(f"Error: no resume file found in '{folder}/'. Place exactly one resume file there.")
+        sys.exit(1)
+
+    if len(files) > 1:
+        print(
+            f"Error: multiple files found in '{folder}/': {', '.join(files)}. "
+            "Please leave only one resume file in that folder."
+        )
+        sys.exit(1)
+
+    return os.path.join(folder, files[0])
 
 
 def select_mode() -> int:
@@ -323,21 +354,6 @@ def print_job_evaluation_results(
     print("\n" + "=" * 80)
 
 
-def print_parseability_report(result: Optional[ParseabilityResult]):
-    if result is None:
-        return
-
-    print("\n📄 ATS PARSEABILITY (based on the original PDF's layout):")
-    print("-" * 60)
-    print(f"Parseability score: {result.parseability_score:.0f}/100")
-    if result.warnings:
-        for warning in result.warnings:
-            print(f"  ⚠️  {warning}")
-    else:
-        print("  No layout issues detected — no tables, multi-column sections, or images found.")
-    print()
-
-
 def _evaluate_resume(
     resume_data: JSONResume, github_data: dict = None, blog_data: dict = None
 ) -> Optional[EvaluationData]:
@@ -409,13 +425,16 @@ def find_profile(profiles, network):
 
 
 def main():
-    pdf_path = RESUME_PATH
-
-    if not os.path.exists(pdf_path):
-        print(f"Error: '{RESUME_PATH}' not found. Place your resume PDF in the project root.")
-        sys.exit(1)
+    pdf_path = find_resume_file()
 
     mode = select_mode()
+
+    if MODEL_PROVIDER_MAPPING.get(DEFAULT_MODEL) == ModelProvider.GEMINI:
+        print(
+            f"Gemini daily budget: {get_gemini_daily_usage_line(DEFAULT_MODEL)} "
+            "(resets ~midnight UTC). Tip: use LLM_PROVIDER=ollama for iterative "
+            "development; a cold run costs ~10 Gemini calls."
+        )
 
     job_description = None
     weight_profile = DEFAULT_PROFILE
@@ -423,14 +442,9 @@ def main():
         job_description = load_job_description()
         weight_profile = select_weight_profile()
 
-    cache_filename = (
-        f"cache/resumecache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
-    )
-    github_cache_filename = (
-        f"cache/githubcache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
-    )
-
-    parseability = scan_pdf_parseability(pdf_path)
+    resume_file_stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    cache_filename = f"cache/resumecache_{resume_file_stem}.json"
+    github_cache_filename = f"cache/githubcache_{resume_file_stem}.json"
 
     resume_data = None
     cache_loaded = False
@@ -528,7 +542,7 @@ def main():
                     encoding="utf-8",
                 )
 
-    candidate_name = os.path.basename(pdf_path).replace(".pdf", "")
+    candidate_name = os.path.splitext(os.path.basename(pdf_path))[0]
     if (
         resume_data
         and hasattr(resume_data, "basics")
@@ -540,7 +554,6 @@ def main():
     if mode == 1:
         score = _evaluate_resume(resume_data, github_data)
         print_evaluation_results(score, candidate_name)
-        print_parseability_report(parseability)
 
         if DEVELOPMENT_MODE:
             csv_row = transform_evaluation_response(
@@ -569,14 +582,12 @@ def main():
             resume_text, job_description, resume_data=resume_data, weight_profile=weight_profile
         )
         print_job_evaluation_results(job_evaluation, candidate_name)
-        print_parseability_report(parseability)
 
         if DEVELOPMENT_MODE:
             csv_row = transform_job_evaluation_response(
                 file_name=os.path.basename(pdf_path),
                 evaluation=job_evaluation,
                 resume_data=resume_data,
-                parseability=parseability,
             )
             csv_path = "job_evaluations.csv"
             file_exists = os.path.exists(csv_path)
@@ -591,4 +602,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except GeminiDailyQuotaExceeded as e:
+        print(f"\n❌ {e}")
+        sys.exit(1)

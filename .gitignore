@@ -1,7 +1,9 @@
 # Project Specific Files
 
 **/*.pyc
-resume/*.pdf
+resume/*
+!resume/.gitkeep
+/resume.pdf
 run/*.pdf
 test_*.py
 cache/

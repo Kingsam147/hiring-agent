@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional
-from models import JSONResume, ParseabilityResult
+from models import JSONResume
 
 
 def transform_parsed_data(parsed_data: Dict) -> Dict:
@@ -740,9 +740,7 @@ def transform_evaluation_response(
     return csv_row
 
 
-def transform_job_evaluation_response(
-    file_name=None, resume_data=None, evaluation=None, parseability: Optional[ParseabilityResult] = None
-):
+def transform_job_evaluation_response(file_name=None, resume_data=None, evaluation=None):
     csv_row = {}
     csv_row["file_name"] = file_name
 
@@ -860,13 +858,6 @@ def transform_job_evaluation_response(
         csv_row["jd_industry"] = "N/A"
         csv_row["industry_mention_count"] = "N/A"
         csv_row["score_summary"] = ""
-
-    if parseability:
-        csv_row["ats_parseability_score"] = parseability.parseability_score
-        csv_row["ats_warnings"] = "; ".join(parseability.warnings) if parseability.warnings else ""
-    else:
-        csv_row["ats_parseability_score"] = "N/A"
-        csv_row["ats_warnings"] = "N/A"
 
     return csv_row
 
