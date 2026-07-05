@@ -32,14 +32,41 @@ lists **every** missing item (not just the first found) before terminating.
 
 ## Verification method
 
-Reuses the existing deterministic `compute_keyword_match()` — no LLM cost.
+Verification happens in three passes, each only running if the previous
+pass left something unresolved — cheapest/most-deterministic first:
 
-For must-have qualifications too long/free-form to keyword-match
-(`status="unverifiable"`), fall back to the existing interactive
-`_knockout_resolver` prompt (y = meets it / n = does not / s = skip),
-identical to today's knockout UX:
-- `n` → counts as missing (flag)
-- `y` or skip → does not count as missing
+**Pass 1 — deterministic keyword match.** Reuses the existing
+`compute_keyword_match()` — no LLM cost. Produces `matched_required`,
+`missing_required`, and `must_have_status` (`found` / `not_found` /
+`unverifiable`) exactly as today.
+
+**Pass 2 — LLM semantic recheck (new).** Literal keyword matching
+false-negatives on phrasing (e.g. JD says "Bachelor's degree in Computer
+Science", resume says "B.S. Computer Science"). Anything Pass 1 could not
+confirm — every `missing_required` skill, plus every must-have with status
+`not_found` or `unverifiable` — is batched into a **single** LLM call (not
+one call per item) that asks the model to judge each one against the resume
+text and return a verdict: `met`, `not_met`, or `uncertain`, with a short
+reasoning string. This is one cheap classification call, not the full
+evaluation pipeline.
+
+Verdicts of `met`/`not_met` are conclusive: the requirement moves to
+"kept" or stays in "missing" respectively, and no further check happens
+for it. Verdicts of `uncertain` fall through to Pass 3.
+
+**Pass 3 — interactive fallback (existing, extended).** Anything still
+unresolved after Pass 2 (i.e. LLM said `uncertain`) is escalated to the
+existing `_knockout_resolver` prompt (y = meets it / n = does not / s =
+skip) — but now only for must-have qualifications, per your answer.
+Required skills that come back `uncertain` from Pass 2 have no interactive
+fallback and conservatively stay in "missing" (there's no existing
+mechanism to prompt for skills, and defaulting to missing is the safer
+failure mode for a hiring gate).
+
+Net effect: a requirement only reaches the user prompt if both the
+deterministic match AND the LLM were unable to confirm it — this should
+make Pass 3 prompts rarer than they are today, since Pass 2 resolves most
+of the borderline cases the old code silently treated as failures.
 
 ## Pipeline placement
 
@@ -60,10 +87,11 @@ keyword match internally every time it's called. To avoid doing this work
 passes and full evaluation proceeds:
 
 - Add `JobDescriptionEvaluator.check_requirements(resume_text, resume_data,
-  knockout_resolver) -> RequirementGateResult`. It calls
-  `extract_job_requirements()` and `compute_keyword_match()` +
-  `apply_knockout_resolutions()` once, and caches the resulting `job_data`
-  and `keyword_result` on `self`.
+  knockout_resolver) -> RequirementGateResult`. It runs the three verification
+  passes above exactly once — `compute_keyword_match()`, the new LLM semantic
+  recheck, then `apply_knockout_resolutions()` for whatever is still
+  unresolved — and caches the resulting `job_data` and the corrected
+  `keyword_result` on `self`.
 - `evaluate()` is updated to reuse `self._job_data` / `self._keyword_result`
   if `check_requirements()` already populated them, instead of
   recomputing/re-prompting.
@@ -72,48 +100,108 @@ passes and full evaluation proceeds:
   than at construction time. A flagged resume that never reaches `evaluate()`
   never pays that cost.
 
-## New data model
+## New data models
 
-`models.py` gets a new Pydantic model:
+`models.py` gets two new Pydantic models:
 
 ```python
+class RequirementVerdict(BaseModel):
+    requirement: str
+    status: Literal["met", "not_met", "uncertain"]
+    reasoning: str
+
+class RequirementRecheckResponse(BaseModel):
+    verdicts: List[RequirementVerdict]
+
 class RequirementGateResult(BaseModel):
     passed: bool
     job_title: str
+    kept_required_skills: List[str]
     missing_required_skills: List[str]
+    kept_must_haves: List[str]
     missing_must_haves: List[str]
 ```
 
-`passed` is `True` only when both lists are empty.
+`RequirementVerdict`/`RequirementRecheckResponse` are the structured-output
+shape for the Pass 2 LLM call. `passed` on `RequirementGateResult` is `True`
+only when both missing lists are empty.
 
-## Output on flag
+`keyword_matching.py` gets a new `apply_llm_recheck(result, verdicts)`
+function (parallel to the existing `apply_knockout_resolutions`) that folds
+Pass 2 verdicts into a `KeywordMatchResult`: moving skills between
+`matched_required`/`missing_required`, setting `resolved` on the relevant
+`must_have_status` entries for `met`/`not_met` verdicts, and recomputing
+`coverage_score`/`gated` so the correction is reflected consistently
+everywhere `keyword_result` is used downstream (not just the gate).
 
-A new `print_flagged_report(gate_result, candidate_name)` in `score.py`
-prints:
-- Candidate name
-- JD job title
-- Missing required skills (list)
-- Missing must-have qualifications (list)
+A new prompt template `prompts/templates/requirement_recheck.jinja` (plus a
+short system-message template) sends the resume text and the batched list of
+unresolved requirements to the LLM for Pass 2.
+
+## Output on flag — explicit kept vs. added lists
+
+A new `build_flagged_report_markdown(gate_result, candidate_name) -> str` in
+`score.py` explicitly lists both sides, not just what's missing:
+- Candidate name and JD job title
+- **Features kept** — required skills and must-haves the resume already
+  satisfies (`kept_required_skills` + `kept_must_haves`)
+- **Features to add** — required skills and must-haves missing from the
+  resume (`missing_required_skills` + `missing_must_haves`)
 - A clear "FLAGGED — does not meet hard requirements" status line
 
 No CSV row is written (per decision — a flagged resume never ran a real
 evaluation, so there's nothing meaningful to record in
-`job_evaluations.csv`). `main()` returns immediately after printing.
+`job_evaluations.csv`). `main()` writes this report to `result.md` (see
+below) and returns immediately.
+
+## Output delivery — written to `result.md`, not the terminal
+
+Per your follow-up, **all** of `score.py`'s report output moves from
+`print()` to a single Markdown file, not just the new gate report:
+
+- `print_evaluation_results` (mode 1) and `print_job_evaluation_results`
+  (mode 2 full evaluation) are converted to `build_evaluation_markdown(...)
+  -> str` and `build_job_evaluation_markdown(...) -> str` respectively —
+  same content and structure they print today (scores, evidence, keyword
+  match, strengths/improvements), reformatted as Markdown headers/bullets
+  instead of ASCII banners.
+- `build_flagged_report_markdown(...)` (new, above) covers the gate-rejection
+  case.
+- `main()` calls whichever of the three applies, then writes the returned
+  string to `result.md` in the project root with a single overwrite
+  (`Path("result.md").write_text(markdown, encoding="utf-8")`) — each run
+  replaces the previous file entirely.
+- A one-line console message (`Report written to result.md`) confirms
+  completion so the terminal isn't silent; this is the only thing still
+  printed.
+- The Gemini daily-spend line and interactive prompts (mode/profile
+  selection, knockout y/n/skip) still print to the terminal as before — only
+  the *report* output moves to the file.
 
 ## Files touched
 
-- **`models.py`** — add `RequirementGateResult`.
-- **`evaluator.py`** — add `check_requirements()`; make embedding model lazy;
-  update `evaluate()` to reuse cached gate results when present.
+- **`models.py`** — add `RequirementVerdict`, `RequirementRecheckResponse`,
+  `RequirementGateResult`.
+- **`keyword_matching.py`** — add `apply_llm_recheck()`.
+- **`prompts/templates/`** — add `requirement_recheck.jinja` and its system
+  message template.
+- **`evaluator.py`** — add `check_requirements()` (runs all three
+  verification passes); add the Pass 2 LLM call method; make embedding model
+  lazy; update `evaluate()` to reuse cached gate results when present.
 - **`score.py`** — move `candidate_name` computation earlier; insert the
-  gate check before the GitHub fetch block; add `print_flagged_report()`;
-  construct the `JobDescriptionEvaluator` once and pass the same instance
-  through to the full-evaluation path so gate results are reused.
+  gate check before the GitHub fetch block; convert `print_evaluation_results`
+  / `print_job_evaluation_results` into `build_*_markdown` functions that
+  return strings; add `build_flagged_report_markdown()`; write the resulting
+  Markdown to `result.md` (overwrite) at the end of `main()`; construct the
+  `JobDescriptionEvaluator` once and pass the same instance through to the
+  full-evaluation path so gate results are reused.
 
 ## Out of scope
 
-- No change to mode 1 (HackerRank Intern) behavior.
+- No change to mode 1 (HackerRank Intern) evaluation *logic* — only its
+  output destination changes (file instead of terminal).
 - No change to the existing knockout-cap behavior for cases where the gate
   *passes* but a must-have was still borderline (that logic in
   `keyword_matching.py` / `evaluate()` stays as-is).
 - No CSV tracking of flagged/rejected resumes (explicitly declined).
+- No historical/append log of past `result.md` runs — each run overwrites.
