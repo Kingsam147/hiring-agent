@@ -9,9 +9,8 @@ from models import (
     JSONResume,
     EvaluationData,
     JobEvaluationData,
-    GeminiDailyQuotaExceeded,
     ModelProvider,
-    get_gemini_daily_usage_line,
+    get_gemini_daily_spend_line,
 )
 from typing import Optional
 from evaluator import ResumeEvaluator, JobDescriptionEvaluator
@@ -430,11 +429,7 @@ def main():
     mode = select_mode()
 
     if MODEL_PROVIDER_MAPPING.get(DEFAULT_MODEL) == ModelProvider.GEMINI:
-        print(
-            f"Gemini daily budget: {get_gemini_daily_usage_line(DEFAULT_MODEL)} "
-            "(resets ~midnight UTC). Tip: use LLM_PROVIDER=ollama for iterative "
-            "development; a cold run costs ~10 Gemini calls."
-        )
+        print(f"Gemini spend so far today: {get_gemini_daily_spend_line(DEFAULT_MODEL)}")
 
     job_description = None
     weight_profile = DEFAULT_PROFILE
@@ -602,8 +597,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except GeminiDailyQuotaExceeded as e:
-        print(f"\n❌ {e}")
-        sys.exit(1)
+    main()

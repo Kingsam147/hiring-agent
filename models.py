@@ -417,48 +417,30 @@ class OllamaProvider:
         return self.client.chat(**chat_params)
 
 
-class GeminiDailyQuotaExceeded(Exception):
-    """Raised when the local Gemini daily request budget is exhausted.
+# Paid-tier Gemini pricing, USD per 1M tokens (verified at ai.google.dev/gemini-api/docs/pricing).
+# gemini-2.5-pro's ">200k prompt" tier is intentionally not modeled -- this
+# pipeline's prompts are a few thousand tokens at most. Prices change over
+# time; re-verify against the pricing page if costs look off.
+GEMINI_PRICING_PER_MILLION_TOKENS = {
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+}
 
-    Deliberately NOT a subclass of google.api_core.exceptions.ResourceExhausted,
-    so GeminiProvider.chat()'s `except ResourceExhausted` retry loop can never
-    catch it -- it propagates immediately with no retries and no pacing wait.
+
+class GeminiSpendTracker:
+    """Persistent per-model, per-UTC-day tracker of Gemini token usage and cost.
+
+    File-based (cache/gemini_spend_<model>_<YYYY-MM-DD>.json) so totals survive
+    across separate `python score.py` invocations. Purely for visibility --
+    never blocks or delays a call, unlike the request-count guard this replaced
+    (removed once billing was enabled, since the free-tier daily cap no longer
+    applies).
     """
 
-
-_DAILY_QUOTA_ID_PATTERN = re.compile(r"GenerateRequestsPerDay|quota_id[^\n]*PerDay", re.IGNORECASE)
-
-
-def _is_daily_quota_error(exc: Exception) -> bool:
-    """Best-effort detection of a requests-per-DAY quota violation from a Gemini 429.
-
-    Matches only the quota_id (e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier),
-    never the shared metric name (generate_content_free_tier_requests), which also
-    appears on recoverable per-minute violations -- matching the metric name would
-    misclassify a transient per-minute 429 as fatal daily exhaustion. If Google's
-    error format changes and this stops matching, calls simply fall back to the
-    existing retry/backoff path (today's behavior) -- never worse.
-    """
-    return bool(_DAILY_QUOTA_ID_PATTERN.search(str(exc)))
-
-
-class GeminiDailyQuotaLedger:
-    """Persistent per-model, per-UTC-day counter of real Gemini API attempts.
-
-    File-based (cache/gemini_quota_<model>_<YYYY-MM-DD>.json) so the count
-    survives across separate `python score.py` invocations, unlike
-    GeminiRateLimiter's in-memory pacing. Always active regardless of
-    DEVELOPMENT_MODE, since quota consumption is real in every mode.
-
-    Note: the UTC day boundary is an approximation -- Google's free-tier
-    reset is commonly reported as midnight Pacific time, not UTC. This is
-    self-correcting: if the local ledger resets early/late relative to the
-    real quota, the next real 429 (if any) re-locks the ledger via
-    mark_exhausted(), at the cost of at most one extra call.
-    """
-
-    def __init__(self, requests_per_day: int, cache_dir: str = "cache"):
-        self.requests_per_day = requests_per_day
+    def __init__(self, cache_dir: str = "cache"):
         self.cache_dir = cache_dir
         self._lock = threading.Lock()
 
@@ -467,127 +449,75 @@ class GeminiDailyQuotaLedger:
 
     def _path(self, model: str) -> str:
         safe_model = re.sub(r"[^A-Za-z0-9._-]", "_", model)
-        return os.path.join(self.cache_dir, f"gemini_quota_{safe_model}_{self._today()}.json")
+        return os.path.join(self.cache_dir, f"gemini_spend_{safe_model}_{self._today()}.json")
 
-    def _read_count(self, model: str) -> int:
+    def _read(self, model: str) -> Dict[str, Any]:
         path = self._path(model)
+        default = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
         if not os.path.exists(path):
-            return 0
+            return default
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return int(data.get("count", 0))
+            return {
+                "input_tokens": int(data.get("input_tokens", 0)),
+                "output_tokens": int(data.get("output_tokens", 0)),
+                "cost": float(data.get("cost", 0.0)),
+            }
         except Exception as e:
-            logger.warning(f"Invalid Gemini quota ledger file {path}: {e}. Treating today's count as 0.")
-            return 0
+            logger.warning(f"Invalid Gemini spend file {path}: {e}. Treating today's totals as 0.")
+            return default
 
-    def _write_count(self, model: str, count: int) -> None:
+    def _write(self, model: str, totals: Dict[str, Any]) -> None:
         path = self._path(model)
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump({"date": self._today(), "model": model, "count": count}, f, indent=2)
+                json.dump({"date": self._today(), "model": model, **totals}, f, indent=2)
             os.replace(tmp_path, path)
         except Exception as e:
-            logger.warning(f"Failed to write Gemini quota ledger file {path}: {e}")
+            logger.warning(f"Failed to write Gemini spend file {path}: {e}")
 
-    def usage_line(self, model: str) -> str:
-        count = self._read_count(model)
-        if self.requests_per_day <= 0:
-            return f"{count} Gemini requests used today for {model} (no daily limit configured)"
-        return f"{count}/{self.requests_per_day} Gemini requests used today for {model}"
+    @staticmethod
+    def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
+        pricing = GEMINI_PRICING_PER_MILLION_TOKENS.get(model)
+        if pricing is None:
+            return None
+        return (input_tokens / 1_000_000) * pricing["input"] + (output_tokens / 1_000_000) * pricing["output"]
 
-    def preflight(self, model: str) -> None:
-        if self.requests_per_day <= 0:
-            return
+    def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> Tuple[Optional[float], Dict[str, Any]]:
+        """Record one call's token usage. Returns (this_call_cost, today's running totals)."""
+        call_cost = self.estimate_cost(model, input_tokens, output_tokens)
         with self._lock:
-            count = self._read_count(model)
-            if count >= self.requests_per_day:
-                raise GeminiDailyQuotaExceeded(
-                    f"Gemini daily request budget exhausted for {model}: "
-                    f"{count}/{self.requests_per_day} used today (UTC date {self._today()}). "
-                    "Not calling the API -- retrying cannot help until the daily quota resets "
-                    "(~midnight UTC by this local ledger; Google's actual reset may be midnight "
-                    "Pacific). Options: wait for the reset, set LLM_PROVIDER=ollama in .env for "
-                    "further testing today, or adjust GEMINI_REQUESTS_PER_DAY if your real quota differs."
-                )
+            totals = self._read(model)
+            totals["input_tokens"] += input_tokens
+            totals["output_tokens"] += output_tokens
+            totals["cost"] += call_cost or 0.0
+            self._write(model, totals)
+        return call_cost, totals
 
-    def record_request(self, model: str) -> int:
-        with self._lock:
-            count = self._read_count(model) + 1
-            self._write_count(model, count)
-        print(f"[GeminiProvider] Daily quota: {self.usage_line(model)}")
-        return count
-
-    def mark_exhausted(self, model: str) -> None:
-        with self._lock:
-            count = max(self._read_count(model), self.requests_per_day if self.requests_per_day > 0 else 0)
-            self._write_count(model, count)
+    def today_summary(self, model: str) -> str:
+        totals = self._read(model)
+        total_tokens = totals["input_tokens"] + totals["output_tokens"]
+        if GEMINI_PRICING_PER_MILLION_TOKENS.get(model) is None:
+            return f"{total_tokens} tokens used today for {model} (pricing unknown for this model)"
+        return f"${totals['cost']:.4f} spent today ({total_tokens} tokens) for {model}"
 
 
-def _get_gemini_daily_ledger() -> GeminiDailyQuotaLedger:
-    global _GEMINI_DAILY_LEDGER
-    if _GEMINI_DAILY_LEDGER is None:
-        from config import GEMINI_REQUESTS_PER_DAY
-
-        _GEMINI_DAILY_LEDGER = GeminiDailyQuotaLedger(GEMINI_REQUESTS_PER_DAY)
-    return _GEMINI_DAILY_LEDGER
+def _get_gemini_spend_tracker() -> GeminiSpendTracker:
+    global _GEMINI_SPEND_TRACKER
+    if _GEMINI_SPEND_TRACKER is None:
+        _GEMINI_SPEND_TRACKER = GeminiSpendTracker()
+    return _GEMINI_SPEND_TRACKER
 
 
-_GEMINI_DAILY_LEDGER: Optional[GeminiDailyQuotaLedger] = None
+_GEMINI_SPEND_TRACKER: Optional[GeminiSpendTracker] = None
 
 
-def get_gemini_daily_usage_line(model: str) -> str:
-    """Public accessor for the daily quota usage banner (used by score.py)."""
-    return _get_gemini_daily_ledger().usage_line(model)
-
-
-class GeminiRateLimiter:
-    """Proactive client-side pacing for Gemini API calls.
-
-    Sleeps before a request if it would arrive sooner than min_interval
-    after the previous request, spreading calls out so the free-tier
-    per-minute quota is rarely hit in the first place. This is separate
-    from (and complementary to) the reactive 429 backoff in GeminiProvider.
-    Also enforces the daily request budget via GeminiDailyQuotaLedger.
-    """
-
-    def __init__(self, requests_per_minute: float):
-        self.min_interval = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
-        self._last_request_time: Optional[float] = None
-        self._lock = threading.Lock()
-
-    def acquire(self, model: str) -> None:
-        _get_gemini_daily_ledger().preflight(model)
-
-        with self._lock:
-            if self.min_interval <= 0 or self._last_request_time is None:
-                self._last_request_time = time.monotonic()
-            else:
-                wait = self._last_request_time + self.min_interval - time.monotonic()
-                if wait > 0:
-                    print(
-                        f"[GeminiProvider] Pacing: waiting {wait:.1f}s to stay under "
-                        f"{60.0 / self.min_interval:.1f} req/min"
-                    )
-                    time.sleep(wait)
-
-                self._last_request_time = time.monotonic()
-
-        _get_gemini_daily_ledger().record_request(model)
-
-
-def _get_gemini_rate_limiter() -> GeminiRateLimiter:
-    global _GEMINI_RATE_LIMITER
-    if _GEMINI_RATE_LIMITER is None:
-        from config import GEMINI_REQUESTS_PER_MINUTE
-
-        _GEMINI_RATE_LIMITER = GeminiRateLimiter(GEMINI_REQUESTS_PER_MINUTE)
-    return _GEMINI_RATE_LIMITER
-
-
-_GEMINI_RATE_LIMITER: Optional[GeminiRateLimiter] = None
+def get_gemini_daily_spend_line(model: str) -> str:
+    """Public accessor for the daily spend banner (used by score.py)."""
+    return _get_gemini_spend_tracker().today_summary(model)
 
 
 class GeminiProvider:
@@ -637,30 +567,29 @@ class GeminiProvider:
 
         for attempt in range(MAX_RETRIES):
             try:
-                _get_gemini_rate_limiter().acquire(model)
-
                 # Send the chat request
                 response = gemini_model.generate_content(gemini_messages)
+
+                # Record token usage and print per-call + running daily cost.
+                usage = response.usage_metadata
+                input_tokens = usage.prompt_token_count
+                output_tokens = max(usage.total_token_count - input_tokens, 0)
+                call_cost, _ = _get_gemini_spend_tracker().record_usage(model, input_tokens, output_tokens)
+                if call_cost is None:
+                    print(
+                        f"[GeminiProvider] {input_tokens + output_tokens} tokens used "
+                        f"(pricing unknown for {model})"
+                    )
+                else:
+                    print(
+                        f"[GeminiProvider] This call: {input_tokens} in + {output_tokens} out tokens, "
+                        f"~${call_cost:.4f}. Today so far: {_get_gemini_spend_tracker().today_summary(model)}"
+                    )
 
                 # Convert Gemini response to Ollama-like format for compatibility
                 return {"message": {"role": "assistant", "content": response.text}}
 
             except ResourceExhausted as e:
-                if _is_daily_quota_error(e):
-                    # Daily quota exhaustion cannot recover mid-retry -- lock the
-                    # local ledger to the configured budget and fail immediately
-                    # instead of burning the remaining retry attempts on a wall
-                    # that will not move until the daily reset.
-                    _get_gemini_daily_ledger().mark_exhausted(model)
-                    raise GeminiDailyQuotaExceeded(
-                        f"Gemini daily request quota for '{model}' is exhausted "
-                        f"(confirmed by API). Retrying will not help -- the daily "
-                        f"quota does not refill until the daily reset (~midnight "
-                        f"UTC/Pacific). Local ledger set to the configured budget so "
-                        f"subsequent calls today fail fast. Switch LLM_PROVIDER=ollama "
-                        f"in .env to keep testing today."
-                    ) from e
-
                 if attempt == MAX_RETRIES - 1:
                     # All retries exhausted — re-raise the original exception.
                     # This surfaces unrecoverable quota errors (RPD, TPM, etc.)
