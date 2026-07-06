@@ -1,0 +1,23 @@
+Re-check the following requirements against the resume below. A deterministic keyword search could not confirm any of them — decide using semantic understanding instead.
+
+## REQUIREMENTS TO RE-CHECK
+
+{% for requirement in requirements %}
+- {{ requirement }}
+{% endfor %}
+
+## CANDIDATE RESUME
+
+{{ resume_text }}
+
+## INSTRUCTIONS
+
+For every requirement listed above, return exactly one verdict object. Use the requirement text EXACTLY as given above for the "requirement" field so it can be matched back programmatically.
+
+Return ONLY this JSON structure, no other text:
+
+{
+    "verdicts": [
+        {"requirement": "string", "status": "met", "reasoning": "string"}
+    ]
+}
