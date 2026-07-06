@@ -357,39 +357,42 @@ class JobDescriptionEvaluator:
         self, resume_text: str, requirements: List[str]
     ) -> Dict[str, RequirementVerdict]:
         cache_path = (
-            f"cache/reqcheckcache_{_hash_key(self.model_name, RECHECK_PROMPT_VERSION, resume_text, '|'.join(requirements))}.json"
+            f"cache/reqcheckcache_{_hash_key(self.model_name, RECHECK_PROMPT_VERSION, resume_text, *requirements)}.json"
         )
         cached = _read_llm_cache(cache_path, RequirementRecheckResponse)
-        if cached is None:
-            system_message = self.template_manager.render_template("requirement_recheck_system_message")
-            if system_message is None:
-                raise ValueError("Failed to render requirement_recheck_system_message template")
+        if cached is not None:
+            logger.info(f"Loaded requirement recheck from cache {cache_path}")
+            return {verdict.requirement: verdict for verdict in cached.verdicts}
 
-            prompt = self.template_manager.render_template(
-                "requirement_recheck", requirements=requirements, resume_text=resume_text
-            )
-            if prompt is None:
-                raise ValueError("Failed to render requirement_recheck template")
+        system_message = self.template_manager.render_template("requirement_recheck_system_message")
+        if system_message is None:
+            raise ValueError("Failed to render requirement_recheck_system_message template")
 
-            chat_params = {
-                "model": self.model_name,
-                "messages": [
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt},
-                ],
-                "options": {
-                    "stream": False,
-                    "temperature": self.model_params.get("temperature", 0.1),
-                    "top_p": self.model_params.get("top_p", 0.9),
-                },
-            }
+        prompt = self.template_manager.render_template(
+            "requirement_recheck", requirements=requirements, resume_text=resume_text
+        )
+        if prompt is None:
+            raise ValueError("Failed to render requirement_recheck template")
 
-            response = self.provider.chat(**chat_params, format=RequirementRecheckResponse.model_json_schema())
-            response_text = extract_json_from_response(response["message"]["content"])
-            cached = RequirementRecheckResponse(**json.loads(response_text))
-            _write_llm_cache(cache_path, cached)
+        chat_params = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            "options": {
+                "stream": False,
+                "temperature": self.model_params.get("temperature", 0.1),
+                "top_p": self.model_params.get("top_p", 0.9),
+            },
+        }
 
-        return {verdict.requirement: verdict for verdict in cached.verdicts}
+        response = self.provider.chat(**chat_params, format=RequirementRecheckResponse.model_json_schema())
+        response_text = extract_json_from_response(response["message"]["content"])
+        recheck_response = RequirementRecheckResponse(**json.loads(response_text))
+        _write_llm_cache(cache_path, recheck_response)
+
+        return {verdict.requirement: verdict for verdict in recheck_response.verdicts}
 
     def check_requirements(
         self,
