@@ -96,6 +96,25 @@ def _must_have_status(qualification: str, normalized_corpus: str) -> MustHaveSta
     return MustHaveStatus(qualification=qualification, status=status)
 
 
+def _weighted_coverage(
+    matched_required_count: int,
+    required_total: int,
+    matched_preferred_count: int,
+    preferred_total: int,
+) -> float:
+    if required_total and preferred_total:
+        return 100 * (
+            REQUIRED_WEIGHT * (matched_required_count / required_total)
+            + PREFERRED_WEIGHT * (matched_preferred_count / preferred_total)
+        )
+    elif required_total:
+        return 100 * (matched_required_count / required_total)
+    elif preferred_total:
+        return 100 * (matched_preferred_count / preferred_total)
+    else:
+        return 50.0
+
+
 def compute_keyword_match(
     job_data: JobDescriptionData,
     resume_text: str,
@@ -120,16 +139,9 @@ def compute_keyword_match(
         for qualification in (job_data.must_have_qualifications or [])
     ]
 
-    if required_skills and preferred_skills:
-        required_ratio = len(matched_required) / len(required_skills)
-        preferred_ratio = len(matched_preferred) / len(preferred_skills)
-        coverage = 100 * (REQUIRED_WEIGHT * required_ratio + PREFERRED_WEIGHT * preferred_ratio)
-    elif required_skills:
-        coverage = 100 * (len(matched_required) / len(required_skills))
-    elif preferred_skills:
-        coverage = 100 * (len(matched_preferred) / len(preferred_skills))
-    else:
-        coverage = 50.0
+    coverage = _weighted_coverage(
+        len(matched_required), len(required_skills), len(matched_preferred), len(preferred_skills)
+    )
 
     gated = any(status.status == "not_found" for status in must_have_status)
     if gated:
@@ -200,7 +212,7 @@ def apply_llm_recheck(
     missing_required = []
     for skill in result.missing_required:
         verdict = verdicts.get(skill)
-        if verdict and verdict.status == "met":
+        if verdict is not None and verdict.status == "met":
             matched_required.append(skill)
         else:
             missing_required.append(skill)
@@ -208,7 +220,7 @@ def apply_llm_recheck(
     updated_status = []
     for status in result.must_have_status:
         verdict = verdicts.get(status.qualification)
-        if verdict is None or status.status == "found":
+        if verdict is None or status.status == "found" or status.resolved is not None:
             updated_status.append(status)
             continue
         if verdict.status == "met":
@@ -220,17 +232,9 @@ def apply_llm_recheck(
 
     required_total = len(matched_required) + len(missing_required)
     preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
-    if required_total and preferred_total:
-        coverage = 100 * (
-            REQUIRED_WEIGHT * (len(matched_required) / required_total)
-            + PREFERRED_WEIGHT * (len(result.matched_preferred) / preferred_total)
-        )
-    elif required_total:
-        coverage = 100 * (len(matched_required) / required_total)
-    elif preferred_total:
-        coverage = 100 * (len(result.matched_preferred) / preferred_total)
-    else:
-        coverage = 50.0
+    coverage = _weighted_coverage(
+        len(matched_required), required_total, len(result.matched_preferred), preferred_total
+    )
 
     gated = any(status.status != "found" and status.resolved is not True for status in updated_status)
     if gated:
