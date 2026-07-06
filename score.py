@@ -9,6 +9,7 @@ from models import (
     JSONResume,
     EvaluationData,
     JobEvaluationData,
+    RequirementGateResult,
     ModelProvider,
     get_gemini_daily_spend_line,
 )
@@ -25,6 +26,8 @@ from transform import (
     convert_blog_data_to_text,
 )
 from config import DEVELOPMENT_MODE
+
+RESULT_FILE_PATH = "result.md"
 
 logger = logging.getLogger(__name__)
 
@@ -106,16 +109,14 @@ def load_job_description() -> str:
     return content
 
 
-def print_evaluation_results(
+def build_evaluation_markdown(
     evaluation: EvaluationData, candidate_name: str = "Candidate"
-):
-    print("\n" + "=" * 80)
-    print(f"📊 RESUME EVALUATION RESULTS FOR: {candidate_name}")
-    print("=" * 80)
+) -> str:
+    lines = [f"# Resume Evaluation Results: {candidate_name}"]
 
     if not evaluation:
-        print("❌ No evaluation data available")
-        return
+        lines.append("\nNo evaluation data available.")
+        return "\n".join(lines)
 
     total_score = 0
     max_score = 0
@@ -127,8 +128,9 @@ def print_evaluation_results(
             max_score += category_data["max"]
 
             if category_score < category_data["score"]:
-                print(
-                    f"⚠️  Warning: {category_name} score capped from {category_data['score']} to {category_score} (max: {category_data['max']})"
+                lines.append(
+                    f"\n> Warning: {category_name} score capped from {category_data['score']} "
+                    f"to {category_score} (max: {category_data['max']})"
                 )
 
     if hasattr(evaluation, "bonus_points") and evaluation.bonus_points:
@@ -140,12 +142,10 @@ def print_evaluation_results(
     max_possible_score = max_score + 20
     if total_score > max_possible_score:
         total_score = max_possible_score
-        print(f"⚠️  Warning: Total score capped at maximum possible value")
+        lines.append("\n> Warning: Total score capped at maximum possible value")
 
-    print(f"\n🎯 OVERALL SCORE: {total_score:.1f}/{max_score}")
-
-    print("\n📈 DETAILED SCORES:")
-    print("-" * 60)
+    lines.append(f"\n**Overall Score:** {total_score:.1f}/{max_score}")
+    lines.append("\n## Detailed Scores")
 
     if hasattr(evaluation, "scores") and evaluation.scores:
         category_maxes = {
@@ -155,144 +155,122 @@ def print_evaluation_results(
             "technical_skills": 10,
         }
 
-        if hasattr(evaluation.scores, "open_source") and evaluation.scores.open_source:
+        if evaluation.scores.open_source:
             os_score = evaluation.scores.open_source
             capped_score = min(os_score.score, category_maxes["open_source"])
-            print(f"🌐 Open Source:          {capped_score}/{os_score.max}")
-            print(f"   Evidence: {os_score.evidence}")
-            print()
+            lines.append(f"\n**Open Source:** {capped_score}/{os_score.max}")
+            lines.append(f"- Evidence: {os_score.evidence}")
 
-        if (
-            hasattr(evaluation.scores, "self_projects")
-            and evaluation.scores.self_projects
-        ):
+        if evaluation.scores.self_projects:
             sp_score = evaluation.scores.self_projects
             capped_score = min(sp_score.score, category_maxes["self_projects"])
-            print(f"🚀 Self Projects:        {capped_score}/{sp_score.max}")
-            print(f"   Evidence: {sp_score.evidence}")
-            print()
+            lines.append(f"\n**Self Projects:** {capped_score}/{sp_score.max}")
+            lines.append(f"- Evidence: {sp_score.evidence}")
 
-        if hasattr(evaluation.scores, "production") and evaluation.scores.production:
+        if evaluation.scores.production:
             prod_score = evaluation.scores.production
             capped_score = min(prod_score.score, category_maxes["production"])
-            print(f"🏢 Production Experience: {capped_score}/{prod_score.max}")
-            print(f"   Evidence: {prod_score.evidence}")
-            print()
+            lines.append(f"\n**Production Experience:** {capped_score}/{prod_score.max}")
+            lines.append(f"- Evidence: {prod_score.evidence}")
 
-        if (
-            hasattr(evaluation.scores, "technical_skills")
-            and evaluation.scores.technical_skills
-        ):
+        if evaluation.scores.technical_skills:
             tech_score = evaluation.scores.technical_skills
             capped_score = min(tech_score.score, category_maxes["technical_skills"])
-            print(f"💻 Technical Skills:     {capped_score}/{tech_score.max}")
-            print(f"   Evidence: {tech_score.evidence}")
-            print()
+            lines.append(f"\n**Technical Skills:** {capped_score}/{tech_score.max}")
+            lines.append(f"- Evidence: {tech_score.evidence}")
 
     if hasattr(evaluation, "bonus_points") and evaluation.bonus_points:
-        print(f"\n⭐ BONUS POINTS: {evaluation.bonus_points.total}")
-        print("-" * 30)
-        print(f"   {evaluation.bonus_points.breakdown}")
+        lines.append(f"\n## Bonus Points: {evaluation.bonus_points.total}")
+        lines.append(f"- {evaluation.bonus_points.breakdown}")
 
     if (
         hasattr(evaluation, "deductions")
         and evaluation.deductions
         and evaluation.deductions.total > 0
     ):
-        print(f"\n⚠️  DEDUCTIONS: -{evaluation.deductions.total}")
-        print("-" * 30)
+        lines.append(f"\n## Deductions: -{evaluation.deductions.total}")
         if evaluation.deductions.reasons:
-            print(f"   {evaluation.deductions.reasons}")
+            lines.append(f"- {evaluation.deductions.reasons}")
 
     if hasattr(evaluation, "key_strengths") and evaluation.key_strengths:
-        print(f"\n✅ KEY STRENGTHS:")
-        print("-" * 30)
-        for i, strength in enumerate(evaluation.key_strengths, 1):
-            print(f"  {i}. {strength}")
+        lines.append("\n## Key Strengths")
+        for strength in evaluation.key_strengths:
+            lines.append(f"- {strength}")
 
-    if (
-        hasattr(evaluation, "areas_for_improvement")
-        and evaluation.areas_for_improvement
-    ):
-        print(f"\n🔧 AREAS FOR IMPROVEMENT:")
-        print("-" * 30)
-        for i, area in enumerate(evaluation.areas_for_improvement, 1):
-            print(f"  {i}. {area}")
+    if hasattr(evaluation, "areas_for_improvement") and evaluation.areas_for_improvement:
+        lines.append("\n## Areas for Improvement")
+        for area in evaluation.areas_for_improvement:
+            lines.append(f"- {area}")
 
-    print("\n" + "=" * 80)
+    return "\n".join(lines)
 
 
-def print_job_evaluation_results(
+def build_job_evaluation_markdown(
     evaluation: JobEvaluationData, candidate_name: str = "Candidate"
-):
-    print("\n" + "=" * 80)
-    print(f"📊 JOB MATCH EVALUATION FOR: {candidate_name}")
-    print(f"   Target Role: {evaluation.job_title}")
-    print("=" * 80)
+) -> str:
+    lines = [f"# Job Match Evaluation: {candidate_name}"]
+    lines.append(f"**Target Role:** {evaluation.job_title}")
 
-    print(f"\n🎯 OVERALL MATCH: {evaluation.weighted_total}/100")
+    lines.append(f"\n**Overall Match:** {evaluation.weighted_total}/100")
     if evaluation.keyword_match and evaluation.keyword_match.knockout_failed:
-        print("   [CAPPED at 30 — reviewer confirmed a must-have is not met]")
-    print(f"   Weight profile: {evaluation.weight_profile}")
+        lines.append("> CAPPED at 30 — reviewer confirmed a must-have is not met")
+    lines.append(f"**Weight profile:** {evaluation.weight_profile}")
 
     if evaluation.score_summary:
-        print("\n💬 WHY THIS SCORE:")
-        print("-" * 30)
-        print(evaluation.score_summary)
+        lines.append("\n## Why This Score")
+        lines.append(evaluation.score_summary)
 
     weights = WEIGHT_PROFILES.get(evaluation.weight_profile, WEIGHT_PROFILES[DEFAULT_PROFILE])
 
-    print("\n📈 CATEGORY BREAKDOWN:")
-    print("-" * 60)
+    lines.append("\n## Category Breakdown")
 
     categories = [
-        (f"💻 Skills Match       ({weights['skills_match']:.0%})", evaluation.scores.skills_match),
-        (f"🏢 Experience Match   ({weights['experience_match']:.0%})", evaluation.scores.experience_match),
-        (f"📋 Title Alignment    ({weights['job_title_alignment']:.0%})", evaluation.scores.job_title_alignment),
-        (f"🎓 Education          ({weights['education']:.0%})", evaluation.scores.education),
-        (f"📝 Resume Quality     ({weights['resume_quality']:.0%})", evaluation.scores.resume_quality),
-        (f"⚠️  Missing Critical   ({weights['missing_critical_requirements']:.0%})", evaluation.scores.missing_critical_requirements),
+        (f"Skills Match ({weights['skills_match']:.0%})", evaluation.scores.skills_match),
+        (f"Experience Match ({weights['experience_match']:.0%})", evaluation.scores.experience_match),
+        (f"Title Alignment ({weights['job_title_alignment']:.0%})", evaluation.scores.job_title_alignment),
+        (f"Education ({weights['education']:.0%})", evaluation.scores.education),
+        (f"Resume Quality ({weights['resume_quality']:.0%})", evaluation.scores.resume_quality),
+        (f"Missing Critical ({weights['missing_critical_requirements']:.0%})", evaluation.scores.missing_critical_requirements),
     ]
 
     for label, category in categories:
-        print(f"{label}: {category.score:.0f}/100")
-        print(f"   Evidence: {category.evidence}")
+        lines.append(f"\n**{label}:** {category.score:.0f}/100")
+        lines.append(f"- Evidence: {category.evidence}")
         if category is evaluation.scores.job_title_alignment and evaluation.seniority:
             seniority = evaluation.seniority
-            print(
-                f"   Seniority: target={seniority.target_label}, candidate={seniority.candidate_label} "
+            lines.append(
+                f"- Seniority: target={seniority.target_label}, candidate={seniority.candidate_label} "
                 f"(gap {seniority.gap:+d})"
             )
-        print()
 
-    print(f"🔍 Semantic Match     ({weights['semantic_match']:.0%}): {evaluation.semantic_match_score:.1f}/100")
-    print("   Whole-document embedding similarity (all-MiniLM-L6-v2) — supplementary signal.")
-    print()
+    lines.append(
+        f"\n**Semantic Match ({weights['semantic_match']:.0%}):** {evaluation.semantic_match_score:.1f}/100"
+    )
+    lines.append("- Whole-document embedding similarity (all-MiniLM-L6-v2) — supplementary signal.")
 
     if evaluation.keyword_match:
         keyword_match = evaluation.keyword_match
-        print("🔑 KEYWORD MATCH:")
-        print("-" * 30)
+        lines.append("\n## Keyword Match")
         coverage_line = f"Keyword coverage: {keyword_match.coverage_score:.1f}/100"
         if keyword_match.gated:
             coverage_line += " [CAPPED — a must-have qualification was not found]"
-        print(coverage_line)
+        lines.append(coverage_line)
 
         total_required = len(keyword_match.matched_required) + len(keyword_match.missing_required)
-        print(f"\nRequired skills matched ({len(keyword_match.matched_required)}/{total_required}):")
-        print(f"  {', '.join(keyword_match.matched_required) if keyword_match.matched_required else 'None'}")
-        print(f"Required skills MISSING:")
-        print(f"  {', '.join(keyword_match.missing_required) if keyword_match.missing_required else 'None'}")
+        lines.append(f"\n**Required skills matched ({len(keyword_match.matched_required)}/{total_required}):**")
+        lines.append(", ".join(keyword_match.matched_required) if keyword_match.matched_required else "None")
+        lines.append("\n**Required skills MISSING:**")
+        lines.append(", ".join(keyword_match.missing_required) if keyword_match.missing_required else "None")
 
         total_preferred = len(keyword_match.matched_preferred) + len(keyword_match.missing_preferred)
         if total_preferred:
-            print(f"\nPreferred skills matched ({len(keyword_match.matched_preferred)}/{total_preferred}):")
-            print(f"  {', '.join(keyword_match.matched_preferred) if keyword_match.matched_preferred else 'None'}")
-            print(f"Preferred skills missing:")
-            print(f"  {', '.join(keyword_match.missing_preferred) if keyword_match.missing_preferred else 'None'}")
+            lines.append(f"\n**Preferred skills matched ({len(keyword_match.matched_preferred)}/{total_preferred}):**")
+            lines.append(", ".join(keyword_match.matched_preferred) if keyword_match.matched_preferred else "None")
+            lines.append("\n**Preferred skills missing:**")
+            lines.append(", ".join(keyword_match.missing_preferred) if keyword_match.missing_preferred else "None")
 
         if keyword_match.must_have_status:
-            print("\nMust-have qualifications:")
+            lines.append("\n**Must-have qualifications:**")
             status_labels = {
                 "found": "found",
                 "not_found": "NOT FOUND",
@@ -300,57 +278,87 @@ def print_job_evaluation_results(
             }
             for status in keyword_match.must_have_status:
                 if status.resolved is True:
-                    label = "confirmed by reviewer"
+                    label = "confirmed met"
                 elif status.resolved is False:
-                    label = "REJECTED by reviewer (knockout)"
+                    label = "REJECTED (knockout)"
                 else:
                     label = status_labels[status.status]
-                print(f"  - {status.qualification}: {label}")
+                lines.append(f"- {status.qualification}: {label}")
 
         if keyword_match.skill_experience:
-            print("\nSKILL TENURE (deterministic, from work-history dates):")
+            lines.append("\n**Skill tenure (deterministic, from work-history dates):**")
             for skill_exp in keyword_match.skill_experience:
                 if skill_exp.years > 0:
-                    print(f"  - {skill_exp.skill}: {skill_exp.years} yrs")
+                    lines.append(f"- {skill_exp.skill}: {skill_exp.years} yrs")
                 else:
-                    print(f"  - {skill_exp.skill}: no dated evidence")
+                    lines.append(f"- {skill_exp.skill}: no dated evidence")
             if evaluation.jd_years_of_experience is not None and keyword_match.estimated_total_years is not None:
-                print(
-                    f"  JD asks for {evaluation.jd_years_of_experience} yrs; candidate total "
+                lines.append(
+                    f"- JD asks for {evaluation.jd_years_of_experience} yrs; candidate total "
                     f"~{keyword_match.estimated_total_years} yrs (from parseable work dates)"
                 )
 
         if evaluation.industry_match:
             industry_match = evaluation.industry_match
             if industry_match.mention_count:
-                print(f"\nIndustry ({industry_match.industry}): mentioned in {industry_match.mention_count} work entr" +
-                      ("y" if industry_match.mention_count == 1 else "ies"))
+                lines.append(
+                    f"\n**Industry ({industry_match.industry}):** mentioned in {industry_match.mention_count} work entr"
+                    + ("y" if industry_match.mention_count == 1 else "ies")
+                )
             else:
-                print(f"\nIndustry ({industry_match.industry}): no literal mentions (LLM judges domain fit within Experience Match)")
+                lines.append(
+                    f"\n**Industry ({industry_match.industry}):** no literal mentions "
+                    "(LLM judges domain fit within Experience Match)"
+                )
 
         suggested_profile = suggest_profile(
             evaluation.job_title, evaluation.industry_match.industry if evaluation.industry_match else None
         )
         if suggested_profile != evaluation.weight_profile:
-            print(
-                f"\nNote: this JD looks like a '{suggested_profile}' role; consider rerunning with that "
+            lines.append(
+                f"\n> Note: this JD looks like a '{suggested_profile}' role; consider rerunning with that "
                 "weight profile (no extra LLM cost)."
             )
-        print()
 
     if evaluation.key_strengths:
-        print("✅ KEY STRENGTHS:")
-        print("-" * 30)
-        for i, strength in enumerate(evaluation.key_strengths, 1):
-            print(f"  {i}. {strength}")
+        lines.append("\n## Key Strengths")
+        for strength in evaluation.key_strengths:
+            lines.append(f"- {strength}")
 
     if evaluation.areas_for_improvement:
-        print(f"\n🔧 AREAS FOR IMPROVEMENT:")
-        print("-" * 30)
-        for i, area in enumerate(evaluation.areas_for_improvement, 1):
-            print(f"  {i}. {area}")
+        lines.append("\n## Areas for Improvement")
+        for area in evaluation.areas_for_improvement:
+            lines.append(f"- {area}")
 
-    print("\n" + "=" * 80)
+    return "\n".join(lines)
+
+
+def build_flagged_report_markdown(
+    gate_result: RequirementGateResult, candidate_name: str = "Candidate"
+) -> str:
+    lines = [f"# Requirement Gate: {candidate_name}"]
+    lines.append(f"**Target Role:** {gate_result.job_title}")
+    lines.append("\n**Status:** FLAGGED — does not meet hard requirements")
+
+    lines.append("\n## Features Kept")
+    kept = gate_result.kept_required_skills + gate_result.kept_must_haves
+    if kept:
+        for item in kept:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- None")
+
+    lines.append("\n## Features to Add")
+    missing = gate_result.missing_required_skills + gate_result.missing_must_haves
+    for item in missing:
+        lines.append(f"- {item}")
+
+    return "\n".join(lines)
+
+
+def write_result_markdown(markdown: str) -> None:
+    Path(RESULT_FILE_PATH).write_text(markdown, encoding="utf-8")
+    print(f"Report written to {RESULT_FILE_PATH}")
 
 
 def _evaluate_resume(
@@ -383,22 +391,6 @@ def _knockout_resolver(qualification: str) -> Optional[bool]:
         if answer in ("s", ""):
             return None
         print("Invalid choice. Please enter y, n, or s.")
-
-
-def _evaluate_with_job_description(
-    resume_text: str,
-    job_description: str,
-    resume_data: Optional[JSONResume] = None,
-    weight_profile: str = DEFAULT_PROFILE,
-) -> Optional[JobEvaluationData]:
-    model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
-    evaluator = JobDescriptionEvaluator(
-        job_description=job_description,
-        model_name=DEFAULT_MODEL,
-        model_params=model_params,
-        weight_profile=weight_profile,
-    )
-    return evaluator.evaluate(resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver)
 
 
 def is_valid_resume_data(resume_data: JSONResume) -> bool:
@@ -484,6 +476,33 @@ def main():
                     "Newly extracted resume data is empty/invalid. Skipping cache write."
                 )
 
+    candidate_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    if (
+        resume_data
+        and hasattr(resume_data, "basics")
+        and resume_data.basics
+        and resume_data.basics.name
+    ):
+        candidate_name = resume_data.basics.name
+
+    job_evaluator = None
+    if mode == 2:
+        model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
+        job_evaluator = JobDescriptionEvaluator(
+            job_description=job_description,
+            model_name=DEFAULT_MODEL,
+            model_params=model_params,
+            weight_profile=weight_profile,
+        )
+        gate_resume_text = convert_json_resume_to_text(resume_data)
+        gate_result = job_evaluator.check_requirements(
+            gate_resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
+        )
+        if not gate_result.passed:
+            markdown = build_flagged_report_markdown(gate_result, candidate_name)
+            write_result_markdown(markdown)
+            return gate_result
+
     github_data = {}
     github_cache_loaded = False
     if DEVELOPMENT_MODE and os.path.exists(github_cache_filename):
@@ -537,18 +556,9 @@ def main():
                     encoding="utf-8",
                 )
 
-    candidate_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    if (
-        resume_data
-        and hasattr(resume_data, "basics")
-        and resume_data.basics
-        and resume_data.basics.name
-    ):
-        candidate_name = resume_data.basics.name
-
     if mode == 1:
         score = _evaluate_resume(resume_data, github_data)
-        print_evaluation_results(score, candidate_name)
+        write_result_markdown(build_evaluation_markdown(score, candidate_name))
 
         if DEVELOPMENT_MODE:
             csv_row = transform_evaluation_response(
@@ -573,10 +583,10 @@ def main():
         if github_data:
             resume_text += convert_github_data_to_text(github_data)
 
-        job_evaluation = _evaluate_with_job_description(
-            resume_text, job_description, resume_data=resume_data, weight_profile=weight_profile
+        job_evaluation = job_evaluator.evaluate(
+            resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
         )
-        print_job_evaluation_results(job_evaluation, candidate_name)
+        write_result_markdown(build_job_evaluation_markdown(job_evaluation, candidate_name))
 
         if DEVELOPMENT_MODE:
             csv_row = transform_job_evaluation_response(
