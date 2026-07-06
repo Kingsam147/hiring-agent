@@ -205,3 +205,20 @@ Per your follow-up, **all** of `score.py`'s report output moves from
   `keyword_matching.py` / `evaluate()` stays as-is).
 - No CSV tracking of flagged/rejected resumes (explicitly declined).
 - No historical/append log of past `result.md` runs — each run overwrites.
+
+## Known trade-off (accepted)
+
+The gate's keyword match runs on resume-only text, before GitHub data is
+fetched (required for the early-exit cost savings this feature exists for).
+When the gate passes, the full evaluation reuses that same resume-only
+keyword-match result rather than recomputing it against GitHub-enriched
+text. Previously, keyword matching always ran against resume+GitHub
+combined. Net effect: a required/preferred skill that appears only in a
+candidate's GitHub repo descriptions (not their resume text) no longer
+counts toward the deterministic `skills_match` score or the "Keyword Match"
+report section — though the LLM-scored categories and semantic similarity
+still see the GitHub-enriched text, since those are computed after GitHub
+data is fetched. Accepted as an intentional trade-off rather than fixed,
+since correcting it would require re-running keyword matching (and
+potentially re-prompting already-answered interactive questions) after
+GitHub fetch on every passing resume.
