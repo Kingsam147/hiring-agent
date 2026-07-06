@@ -337,6 +337,25 @@ class KeywordMatchResult(BaseModel):
     estimated_total_years: Optional[float] = None
 
 
+class RequirementVerdict(BaseModel):
+    requirement: str
+    status: Literal["met", "not_met", "uncertain"]
+    reasoning: str
+
+
+class RequirementRecheckResponse(BaseModel):
+    verdicts: List[RequirementVerdict] = []
+
+
+class RequirementGateResult(BaseModel):
+    passed: bool
+    job_title: str
+    kept_required_skills: List[str] = []
+    missing_required_skills: List[str] = []
+    kept_must_haves: List[str] = []
+    missing_must_haves: List[str] = []
+
+
 class ScoreSummary(BaseModel):
     summary: str
 
