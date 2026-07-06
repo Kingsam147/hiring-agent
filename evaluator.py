@@ -11,6 +11,9 @@ from models import (
     KeywordMatchResult,
     SeniorityAssessment,
     ScoreSummary,
+    RequirementVerdict,
+    RequirementRecheckResponse,
+    RequirementGateResult,
 )
 from llm_utils import initialize_llm_provider, extract_json_from_response
 from keyword_matching import (
@@ -18,6 +21,7 @@ from keyword_matching import (
     build_skills_evidence,
     compute_industry_mentions,
     apply_knockout_resolutions,
+    apply_llm_recheck,
     KNOCKOUT_CAP,
 )
 from seniority import assess_seniority
@@ -40,6 +44,9 @@ PROMPT_VERSION = "2"
 
 # Bump whenever why_this_score.jinja changes materially.
 SUMMARY_PROMPT_VERSION = "1"
+
+# Bump whenever requirement_recheck.jinja or its inputs change materially.
+RECHECK_PROMPT_VERSION = "1"
 
 from prompt import (
     DEFAULT_MODEL,
@@ -176,7 +183,9 @@ class JobDescriptionEvaluator:
         self.weights = get_profile(weight_profile)
         self.template_manager = TemplateManager()
         self.provider = initialize_llm_provider(model_name)
-        self._load_embedding_model()
+        self.embedding_model = None
+        self._job_data: Optional[JobDescriptionData] = None
+        self._keyword_result: Optional[KeywordMatchResult] = None
 
     def _load_embedding_model(self):
         from sentence_transformers import SentenceTransformer
@@ -344,26 +353,122 @@ class JobDescriptionEvaluator:
         )
         return round(min(total, 100.0), 1)
 
-    def evaluate(
+    def _llm_recheck_requirements(
+        self, resume_text: str, requirements: List[str]
+    ) -> Dict[str, RequirementVerdict]:
+        cache_path = (
+            f"cache/reqcheckcache_{_hash_key(self.model_name, RECHECK_PROMPT_VERSION, resume_text, '|'.join(requirements))}.json"
+        )
+        cached = _read_llm_cache(cache_path, RequirementRecheckResponse)
+        if cached is None:
+            system_message = self.template_manager.render_template("requirement_recheck_system_message")
+            if system_message is None:
+                raise ValueError("Failed to render requirement_recheck_system_message template")
+
+            prompt = self.template_manager.render_template(
+                "requirement_recheck", requirements=requirements, resume_text=resume_text
+            )
+            if prompt is None:
+                raise ValueError("Failed to render requirement_recheck template")
+
+            chat_params = {
+                "model": self.model_name,
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt},
+                ],
+                "options": {
+                    "stream": False,
+                    "temperature": self.model_params.get("temperature", 0.1),
+                    "top_p": self.model_params.get("top_p", 0.9),
+                },
+            }
+
+            response = self.provider.chat(**chat_params, format=RequirementRecheckResponse.model_json_schema())
+            response_text = extract_json_from_response(response["message"]["content"])
+            cached = RequirementRecheckResponse(**json.loads(response_text))
+            _write_llm_cache(cache_path, cached)
+
+        return {verdict.requirement: verdict for verdict in cached.verdicts}
+
+    def check_requirements(
         self,
         resume_text: str,
         resume_data: Optional[JSONResume] = None,
         knockout_resolver: Optional[Callable[[str], Optional[bool]]] = None,
-    ) -> JobEvaluationData:
+    ) -> RequirementGateResult:
         logger.info("Extracting requirements from job description...")
         job_data = self.extract_job_requirements()
         logger.info(f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}")
 
         logger.info("Computing deterministic keyword match...")
         keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
+
+        recheck_candidates = list(keyword_result.missing_required) + [
+            status.qualification
+            for status in keyword_result.must_have_status
+            if status.status in ("not_found", "unverifiable")
+        ]
+        if recheck_candidates:
+            logger.info(f"Rechecking {len(recheck_candidates)} unresolved requirement(s) with the LLM...")
+            verdicts = self._llm_recheck_requirements(resume_text, recheck_candidates)
+            keyword_result = apply_llm_recheck(keyword_result, verdicts)
+
+        keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
+        if keyword_result.knockout_failed:
+            logger.info("A must-have qualification was rejected — capping score.")
+
+        self._job_data = job_data
+        self._keyword_result = keyword_result
+
+        missing_must_haves = [
+            status.qualification
+            for status in keyword_result.must_have_status
+            if status.status != "found" and status.resolved is not True
+        ]
+        kept_must_haves = [
+            status.qualification
+            for status in keyword_result.must_have_status
+            if status.status == "found" or status.resolved is True
+        ]
+
+        return RequirementGateResult(
+            passed=not keyword_result.missing_required and not missing_must_haves,
+            job_title=job_data.job_title,
+            kept_required_skills=list(keyword_result.matched_required),
+            missing_required_skills=list(keyword_result.missing_required),
+            kept_must_haves=kept_must_haves,
+            missing_must_haves=missing_must_haves,
+        )
+
+    def evaluate(
+        self,
+        resume_text: str,
+        resume_data: Optional[JSONResume] = None,
+        knockout_resolver: Optional[Callable[[str], Optional[bool]]] = None,
+    ) -> JobEvaluationData:
+        if self._job_data is not None and self._keyword_result is not None:
+            logger.info("Reusing job requirements and keyword match from check_requirements().")
+            job_data = self._job_data
+            keyword_result = self._keyword_result
+        else:
+            logger.info("Extracting requirements from job description...")
+            job_data = self.extract_job_requirements()
+            logger.info(f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}")
+
+            logger.info("Computing deterministic keyword match...")
+            keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
+            keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
+
         logger.info(
             f"Keyword coverage: {keyword_result.coverage_score} | "
             f"Missing required: {keyword_result.missing_required}"
         )
-
-        keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
         if keyword_result.knockout_failed:
             logger.info("A must-have qualification was rejected by the reviewer — capping score.")
+
+        if self.embedding_model is None:
+            self._load_embedding_model()
 
         logger.info("Assessing job-title seniority...")
         seniority = assess_seniority(job_data.job_title, resume_data)
