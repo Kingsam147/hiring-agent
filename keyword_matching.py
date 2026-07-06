@@ -205,7 +205,7 @@ def apply_knockout_resolutions(
     return result.model_copy(update={
         "must_have_status": updated_status,
         "gated": gated,
-        "coverage_score": coverage_score,
+        "coverage_score": round(coverage_score, 1),
         "knockout_failed": knockout_failed,
     })
 
