@@ -188,10 +188,18 @@ def apply_knockout_resolutions(
         if answer is False:
             knockout_failed = True
 
-    coverage_score = result.coverage_score
-    gated = result.gated
-    if knockout_failed:
-        gated = True
+    required_total = len(result.matched_required) + len(result.missing_required)
+    preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
+    coverage_score = _weighted_coverage(
+        len(result.matched_required), required_total,
+        len(result.matched_preferred), preferred_total,
+    )
+
+    gated = any(
+        status.status != "found" and status.resolved is not True
+        for status in updated_status
+    )
+    if gated:
         coverage_score = min(coverage_score, GATE_CAP)
 
     return result.model_copy(update={
