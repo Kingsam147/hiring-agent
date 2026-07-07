@@ -128,3 +128,39 @@ def parse_result_markdown(result_path: str = RESULT_FILE_PATH) -> GapAnalysis:
         f"(expected it to start with '{FULL_REPORT_HEADER}' or "
         f"'{FLAGGED_REPORT_HEADER}'). Re-run 'python score.py' to regenerate it."
     )
+
+
+def load_cached_resume() -> JSONResume:
+    pdf_path = find_resume_file()
+    resume_file_stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    cache_filename = f"cache/resumecache_{resume_file_stem}.json"
+    if not os.path.exists(cache_filename):
+        sys.exit(
+            f"Error: '{cache_filename}' not found. Run 'python score.py' first "
+            "so the parsed resume is cached."
+        )
+    cached_data = json.loads(Path(cache_filename).read_text(encoding="utf-8"))
+    return JSONResume(**cached_data)
+
+
+def load_reflow_resume_module():
+    if not REFLOW_RESUME_PATH.exists():
+        sys.exit(f"Error: '{REFLOW_RESUME_PATH}' not found.")
+    module_spec = importlib.util.spec_from_file_location(
+        "reflow_resume", REFLOW_RESUME_PATH
+    )
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+def load_skills_bank() -> str:
+    if not SKILLS_BANK_PATH.exists():
+        return ""
+    content = SKILLS_BANK_PATH.read_text(encoding="utf-8").strip()
+    meaningful_lines = [
+        line
+        for line in content.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "["))
+    ]
+    return content if meaningful_lines else ""
