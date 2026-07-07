@@ -5,7 +5,6 @@ resume/*
 !resume/.gitkeep
 /resume.pdf
 run/*.pdf
-test_*.py
 cache/
 resume_evaluations.csv
 job_evaluations.csv
