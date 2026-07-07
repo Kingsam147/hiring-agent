@@ -17,6 +17,7 @@ class ModelProvider(Enum):
 
     OLLAMA = "ollama"
     GEMINI = "gemini"
+    CLAUDE = "claude"
 
 
 @runtime_checkable
@@ -634,3 +635,57 @@ class GeminiProvider:
                     f"Retrying in {sleep_time}s..."
                 )
                 time.sleep(sleep_time)
+
+
+class ClaudeProvider:
+    """Anthropic Claude API provider implementation.
+
+    Matches the LLMProvider Protocol and the OllamaProvider/GeminiProvider
+    return shape: {"message": {"role": "assistant", "content": text}}.
+
+    Claude Sonnet 5 rejects non-default temperature/top_p/top_k, so the
+    `options` sampling values are intentionally not forwarded. The Ollama-style
+    `format` kwarg (JSON schema) is accepted but ignored — callers must
+    instruct JSON output in the prompt and parse with
+    extract_json_from_response, exactly as the Gemini path already does.
+    """
+
+    def __init__(self, api_key: str):
+        import anthropic
+
+        self.client = anthropic.Anthropic(api_key=api_key)
+
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        options: Dict[str, Any] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        system_parts = []
+        conversation = []
+        for message in messages:
+            if message["role"] == "system":
+                system_parts.append(message["content"])
+            else:
+                conversation.append(
+                    {"role": message["role"], "content": message["content"]}
+                )
+
+        request_params = {
+            "model": model,
+            "max_tokens": 16000,
+            "messages": conversation,
+        }
+        if system_parts:
+            request_params["system"] = "\n\n".join(system_parts)
+
+        response = self.client.messages.create(**request_params)
+
+        if response.stop_reason == "max_tokens":
+            logger.warning("[ClaudeProvider] Response truncated at max_tokens.")
+
+        text_parts = [
+            block.text for block in response.content if block.type == "text"
+        ]
+        return {"message": {"role": "assistant", "content": "".join(text_parts)}}

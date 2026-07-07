@@ -41,6 +41,9 @@ MODEL_PARAMETERS = {
     "gemini-2.5-flash-lite": {"temperature": 0.1, "top_p": 0.9},
     "gemini-3.5-flash": {"temperature": 0.1, "top_p": 0.9},
     "gemini-3.1-flash-lite": {"temperature": 0.1, "top_p": 0.9},
+    # Anthropic Claude models. Claude Sonnet 5 rejects non-default sampling
+    # parameters, so no temperature/top_p here — ClaudeProvider ignores them.
+    "claude-sonnet-5": {},
 }
 
 # Model provider mapping
@@ -61,7 +64,10 @@ MODEL_PROVIDER_MAPPING = {
     "gemini-2.5-pro": ModelProvider.GEMINI,
     "gemini-3.5-flash": ModelProvider.GEMINI,
     "gemini-3.1-flash-lite": ModelProvider.GEMINI,
+    # Anthropic Claude models
+    "claude-sonnet-5": ModelProvider.CLAUDE,
 }
 
 # Get API keys from environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
