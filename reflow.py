@@ -446,3 +446,182 @@ def generate_tailored_candidate(
 
     logger.warning("Discarding this iteration's candidate: guardrails still failing after retries.")
     return None
+
+
+def _find_work_entry(work_items, title: str):
+    if not work_items:
+        return None
+    parts = title.split(" | ")
+    company_name = parts[0].strip()
+    position = parts[1].strip() if len(parts) > 1 else None
+    for work_item in work_items:
+        if work_item.name and work_item.name.strip().lower() == company_name.lower():
+            return work_item
+    if position:
+        for work_item in work_items:
+            if work_item.position and position.lower() in work_item.position.lower():
+                return work_item
+    return None
+
+
+def _find_project_entry(project_items, title: str):
+    if not project_items:
+        return None
+    project_name = title.split(" | ")[0].strip().lower()
+    for project_item in project_items:
+        if not project_item.name:
+            continue
+        cached_name = project_item.name.strip().lower()
+        if (
+            cached_name == project_name
+            or project_name in cached_name
+            or cached_name in project_name
+        ):
+            return project_item
+    return None
+
+
+def apply_candidate_to_resume(
+    original_resume: JSONResume, candidate: TailoredResume
+) -> JSONResume:
+    tailored_resume = copy.deepcopy(original_resume)
+
+    if tailored_resume.basics is not None:
+        tailored_resume.basics.summary = candidate.summary
+
+    tailored_resume.skills = [
+        Skill(
+            name=skill.label.rstrip(": ").strip(),
+            keywords=[keyword.strip() for keyword in skill.rest.split(",") if keyword.strip()],
+        )
+        for skill in candidate.skills
+    ]
+
+    for entry in candidate.experience:
+        work_item = _find_work_entry(tailored_resume.work, entry.title)
+        if work_item is not None:
+            work_item.highlights = list(entry.bullets)
+        else:
+            logger.warning(
+                f'No cached work entry matches title "{entry.title}"; its tailored '
+                "bullets will not affect the regrade."
+            )
+
+    for entry in candidate.projects:
+        project_item = _find_project_entry(tailored_resume.projects, entry.title)
+        if project_item is not None:
+            project_item.highlights = list(entry.bullets)
+        else:
+            logger.warning(
+                f'No cached project matches title "{entry.title}"; its tailored '
+                "bullets will not affect the regrade."
+            )
+
+    return tailored_resume
+
+
+def build_frozen_resolver(
+    job_description: str,
+    weight_profile: str,
+    original_resume_text: str,
+    original_resume: JSONResume,
+):
+    """Ask the user about unresolved must-haves exactly once, up front."""
+    captured_answers: Dict[str, Optional[bool]] = {}
+
+    def capturing_resolver(qualification: str) -> Optional[bool]:
+        answer = _knockout_resolver(qualification)
+        captured_answers[qualification] = answer
+        return answer
+
+    setup_evaluator = JobDescriptionEvaluator(
+        job_description=job_description,
+        model_name=DEFAULT_MODEL,
+        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
+        weight_profile=weight_profile,
+    )
+    setup_evaluator.check_requirements(
+        original_resume_text,
+        resume_data=original_resume,
+        knockout_resolver=capturing_resolver,
+    )
+
+    def frozen_resolver(qualification: str) -> Optional[bool]:
+        return captured_answers.get(qualification)
+
+    return frozen_resolver
+
+
+def regrade_candidate(
+    job_description: str,
+    weight_profile: str,
+    tailored_resume: JSONResume,
+    frozen_resolver,
+) -> float:
+    resume_text = convert_json_resume_to_text(tailored_resume)
+    fresh_evaluator = JobDescriptionEvaluator(
+        job_description=job_description,
+        model_name=DEFAULT_MODEL,
+        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
+        weight_profile=weight_profile,
+    )
+    fresh_evaluator.check_requirements(
+        resume_text, resume_data=tailored_resume, knockout_resolver=frozen_resolver
+    )
+    evaluation = fresh_evaluator.evaluate(
+        resume_text, resume_data=tailored_resume, knockout_resolver=frozen_resolver
+    )
+    return evaluation.weighted_total
+
+
+def run_reflow_loop(
+    tailor_provider,
+    template_manager: TemplateManager,
+    gap: GapAnalysis,
+    original_resume: JSONResume,
+    reflow_module,
+    skills_bank: str,
+    job_description: str,
+    frozen_resolver,
+) -> Tuple[Optional[TailoredResume], float, List[float]]:
+    best_candidate: Optional[TailoredResume] = None
+    best_score = float("-inf")
+    score_history: List[float] = []
+    stagnant_iterations = 0
+    current_content = build_candidate_from_module(reflow_module)
+
+    for iteration in range(1, MAX_ITERATIONS + 1):
+        print(f"\n=== Iteration {iteration}/{MAX_ITERATIONS} ===")
+        candidate = generate_tailored_candidate(
+            tailor_provider, template_manager, gap, current_content, skills_bank, reflow_module
+        )
+        if candidate is None:
+            print("No valid candidate this iteration (guardrails failed after retries).")
+            stagnant_iterations += 1
+            if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
+                print("Stopping early: no improvement for "
+                      f"{MAX_STAGNANT_ITERATIONS} consecutive iterations.")
+                break
+            continue
+
+        tailored_resume = apply_candidate_to_resume(original_resume, candidate)
+        iteration_score = regrade_candidate(
+            job_description, gap.weight_profile, tailored_resume, frozen_resolver
+        )
+        score_history.append(iteration_score)
+        print(f"Iteration {iteration} weighted total: {iteration_score}/100")
+
+        if iteration_score > best_score:
+            best_score = iteration_score
+            best_candidate = candidate
+            current_content = candidate
+            stagnant_iterations = 0
+        else:
+            stagnant_iterations += 1
+
+        if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
+            print("Stopping early: no improvement for "
+                  f"{MAX_STAGNANT_ITERATIONS} consecutive iterations.")
+            break
+
+    return best_candidate, best_score, score_history
