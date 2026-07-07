@@ -23,7 +23,9 @@ class _StubTailorProvider:
         self._payload = json.dumps(
             {
                 "summary": module.SUMMARY,
-                "skills": [{"label": label, "rest": rest} for label, rest in module.SKILLS],
+                "skills": [
+                    {"label": label, "rest": rest} for label, rest in module.SKILLS
+                ],
                 "experience": [
                     {"title": entry["title"], "bullets": list(entry["bullets"])}
                     for entry in module.EXPERIENCE
@@ -51,7 +53,9 @@ def _gap() -> GapAnalysis:
     )
 
 
-def test_reflow_loop_tracks_best_score_and_stops_on_plateau(fake_reflow_module, monkeypatch):
+def test_reflow_loop_tracks_best_score_and_stops_on_plateau(
+    fake_reflow_module, monkeypatch
+):
     scores = iter([70.0, 75.0, 78.0, 77.0, 76.0, 999.0])  # 999 must never be reached
     monkeypatch.setattr(reflow, "regrade_candidate", lambda *a, **kw: next(scores))
 
@@ -104,10 +108,14 @@ def test_reflow_loop_reports_not_compatible_when_score_plateaus_below_seventy(
     )
 
     assert best_score == 40.0
-    assert reflow.resolve_band(best_score) is None  # main() would print "not compatible"
+    assert (
+        reflow.resolve_band(best_score) is None
+    )  # main() would print "not compatible"
 
 
-def test_reflow_writes_correctly_spliced_tailored_generator(fake_reflow_module, monkeypatch, tmp_path):
+def test_reflow_writes_correctly_spliced_tailored_generator(
+    fake_reflow_module, monkeypatch, tmp_path
+):
     tailored_output_path = tmp_path / "fake_reflow_resume_tailored.py"
     monkeypatch.setattr(reflow, "REFLOW_RESUME_PATH", _fixture_path())
     monkeypatch.setattr(reflow, "TAILORED_RESUME_PATH", tailored_output_path)
@@ -123,7 +131,9 @@ def test_reflow_writes_correctly_spliced_tailored_generator(fake_reflow_module, 
     assert fake_reflow_module.NAME in source  # untouched
     assert fake_reflow_module.EDUCATION_LINE in source  # untouched
 
-    spec = importlib.util.spec_from_file_location("tailored_fixture", tailored_output_path)
+    spec = importlib.util.spec_from_file_location(
+        "tailored_fixture", tailored_output_path
+    )
     tailored_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tailored_module)
     assert tailored_module.SUMMARY == candidate.summary

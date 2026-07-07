@@ -61,7 +61,9 @@ def test_exits_when_result_file_missing(tmp_path):
 
 def test_exits_when_result_file_has_unrecognized_shape(tmp_path):
     report = tmp_path / "result.md"
-    report.write_text("# Some Other Report\nNot a job-match report.\n", encoding="utf-8")
+    report.write_text(
+        "# Some Other Report\nNot a job-match report.\n", encoding="utf-8"
+    )
 
     with pytest.raises(SystemExit):
         reflow.parse_result_markdown(str(report))

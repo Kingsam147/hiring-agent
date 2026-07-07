@@ -34,7 +34,9 @@ def test_compute_weighted_total_applies_engineering_weights():
         job_title_alignment=JobCategoryScore(score=70, evidence="close title match"),
         education=JobCategoryScore(score=100, evidence="meets requirement"),
         resume_quality=JobCategoryScore(score=85, evidence="well written"),
-        missing_critical_requirements=JobCategoryScore(score=100, evidence="none missing"),
+        missing_critical_requirements=JobCategoryScore(
+            score=100, evidence="none missing"
+        ),
     )
     semantic_score = 60.0
 
@@ -82,17 +84,25 @@ def test_evaluate_orchestration_with_mocked_llm_and_embeddings(monkeypatch):
 
     llm_result = LLMJobEvaluationResponse(
         scores=LLMJobScores(
-            experience_match=JobCategoryScore(score=90, evidence="strong backend experience"),
-            job_title_alignment=JobCategoryScore(score=80, evidence="close title match"),
+            experience_match=JobCategoryScore(
+                score=90, evidence="strong backend experience"
+            ),
+            job_title_alignment=JobCategoryScore(
+                score=80, evidence="close title match"
+            ),
             education=JobCategoryScore(score=100, evidence="meets requirement"),
             resume_quality=JobCategoryScore(score=85, evidence="well written"),
-            missing_critical_requirements=JobCategoryScore(score=100, evidence="none missing"),
+            missing_critical_requirements=JobCategoryScore(
+                score=100, evidence="none missing"
+            ),
         ),
         key_strengths=["Strong Python and SQL skills"],
         areas_for_improvement=["Could add Docker experience"],
     )
     monkeypatch.setattr(evaluator, "_score_resume", lambda *args, **kwargs: llm_result)
-    monkeypatch.setattr(evaluator, "generate_score_summary", lambda evaluation: "canned summary")
+    monkeypatch.setattr(
+        evaluator, "generate_score_summary", lambda evaluation: "canned summary"
+    )
 
     def fake_load_embedding_model():
         evaluator.embedding_model = object()

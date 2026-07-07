@@ -100,7 +100,9 @@ def test_transform_education_splits_degree_and_area():
 
 
 def test_transform_achievements_maps_alternate_field_names():
-    raw = [{"name": "Best Hackathon Project", "organization": "HackXYZ", "year": "2023"}]
+    raw = [
+        {"name": "Best Hackathon Project", "organization": "HackXYZ", "year": "2023"}
+    ]
 
     transformed = transform_achievements(raw)
 

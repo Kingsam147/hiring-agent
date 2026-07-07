@@ -33,7 +33,9 @@ def test_keyword_match_finds_required_and_preferred_skills():
 
 def test_keyword_match_gates_coverage_when_must_have_missing():
     job_data = _job_data(must_have_qualifications=["US citizenship required"])
-    resume_text = "Backend engineer experienced in Python, SQL, Kubernetes, React, and Docker."
+    resume_text = (
+        "Backend engineer experienced in Python, SQL, Kubernetes, React, and Docker."
+    )
 
     result = compute_keyword_match(job_data, resume_text)
 
@@ -44,9 +46,13 @@ def test_keyword_match_gates_coverage_when_must_have_missing():
 
 def test_apply_knockout_resolutions_resolves_unverifiable_must_have():
     job_data = _job_data(
-        must_have_qualifications=["Willingness to work in a fast paced, high pressure environment"]
+        must_have_qualifications=[
+            "Willingness to work in a fast paced, high pressure environment"
+        ]
     )
-    resume_text = "Backend engineer experienced in Python, SQL, Kubernetes, React, and Docker."
+    resume_text = (
+        "Backend engineer experienced in Python, SQL, Kubernetes, React, and Docker."
+    )
     result = compute_keyword_match(job_data, resume_text)
     assert result.must_have_status[0].status == "unverifiable"
 

@@ -36,7 +36,11 @@ def test_build_skills_evidence_notes_gate_cap():
 
 def test_compute_industry_mentions_finds_matching_work_entry():
     resume_data = JSONResume(
-        work=[Work(name="FinBank", position="Engineer", highlights=["Built FinTech tools"])]
+        work=[
+            Work(
+                name="FinBank", position="Engineer", highlights=["Built FinTech tools"]
+            )
+        ]
     )
 
     match = compute_industry_mentions("FinTech", resume_data)

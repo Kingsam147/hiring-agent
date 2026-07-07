@@ -20,7 +20,11 @@ class _DispatchingProvider:
     different `format=<Model>.model_json_schema()`), or a plain-text
     response when no format is requested (generate_score_summary)."""
 
-    def __init__(self, responses_by_schema_title: dict, plain_text_response: str = "canned summary"):
+    def __init__(
+        self,
+        responses_by_schema_title: dict,
+        plain_text_response: str = "canned summary",
+    ):
         self._responses = responses_by_schema_title
         self._plain_text_response = plain_text_response
 
@@ -70,7 +74,11 @@ def test_check_requirements_gates_on_missing_required_skill():
     )
     recheck_payload = {
         "verdicts": [
-            {"requirement": "Kubernetes", "status": "not_met", "reasoning": "no mention"}
+            {
+                "requirement": "Kubernetes",
+                "status": "not_met",
+                "reasoning": "no mention",
+            }
         ]
     }
     evaluator.provider = _DispatchingProvider(
@@ -81,7 +89,9 @@ def test_check_requirements_gates_on_missing_required_skill():
     )
 
     gate_result = evaluator.check_requirements(
-        "Backend engineer experienced in Python.", resume_data=None, knockout_resolver=None
+        "Backend engineer experienced in Python.",
+        resume_data=None,
+        knockout_resolver=None,
     )
 
     assert gate_result.passed is False
@@ -140,10 +150,26 @@ def test_evaluate_full_flow_with_dispatched_llm_responses(monkeypatch):
 def test_resume_evaluator_evaluate_resume_with_mocked_llm():
     evaluation_payload = {
         "scores": {
-            "open_source": {"score": 20, "max": 35, "evidence": "some open source work"},
-            "self_projects": {"score": 25, "max": 30, "evidence": "solid self projects"},
-            "production": {"score": 15, "max": 25, "evidence": "some production experience"},
-            "technical_skills": {"score": 8, "max": 10, "evidence": "good technical skills"},
+            "open_source": {
+                "score": 20,
+                "max": 35,
+                "evidence": "some open source work",
+            },
+            "self_projects": {
+                "score": 25,
+                "max": 30,
+                "evidence": "solid self projects",
+            },
+            "production": {
+                "score": 15,
+                "max": 25,
+                "evidence": "some production experience",
+            },
+            "technical_skills": {
+                "score": 8,
+                "max": 10,
+                "evidence": "good technical skills",
+            },
         },
         "bonus_points": {"total": 5, "breakdown": "bonus for extra activity"},
         "deductions": {"total": 0, "reasons": "none"},
@@ -151,7 +177,9 @@ def test_resume_evaluator_evaluate_resume_with_mocked_llm():
         "areas_for_improvement": ["More open source contributions"],
     }
     resume_evaluator = ResumeEvaluator(model_name="gemini-2.5-flash")
-    resume_evaluator.provider = _DispatchingProvider({"EvaluationData": evaluation_payload})
+    resume_evaluator.provider = _DispatchingProvider(
+        {"EvaluationData": evaluation_payload}
+    )
 
     result = resume_evaluator.evaluate_resume("Backend engineer resume text.")
 

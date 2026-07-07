@@ -23,7 +23,9 @@ def test_extract_basics_section_transforms_llm_response(monkeypatch):
             "profiles": [{"url": "https://github.com/janedoe"}],
         }
     }
-    monkeypatch.setattr(handler.provider, "chat", lambda **kwargs: _canned_response(canned))
+    monkeypatch.setattr(
+        handler.provider, "chat", lambda **kwargs: _canned_response(canned)
+    )
 
     result = handler.extract_basics_section("some resume markdown text")
 
@@ -42,7 +44,9 @@ def test_extract_skills_section_transforms_llm_response(monkeypatch):
             {"name": "Backend", "level": None, "keywords": ["Node.js", "PostgreSQL"]},
         ]
     }
-    monkeypatch.setattr(handler.provider, "chat", lambda **kwargs: _canned_response(canned))
+    monkeypatch.setattr(
+        handler.provider, "chat", lambda **kwargs: _canned_response(canned)
+    )
 
     result = handler.extract_skills_section("some resume markdown text")
 
@@ -57,7 +61,9 @@ def test_extract_section_returns_none_on_malformed_json(monkeypatch):
     monkeypatch.setattr(
         handler.provider,
         "chat",
-        lambda **kwargs: {"message": {"role": "assistant", "content": "not valid json"}},
+        lambda **kwargs: {
+            "message": {"role": "assistant", "content": "not valid json"}
+        },
     )
 
     result = handler.extract_basics_section("some resume markdown text")

@@ -21,7 +21,13 @@ def test_convert_json_resume_to_text_includes_all_major_sections():
             email="jane@example.com",
             summary="Backend engineer.",
             location=Location(city="Boston", region="MA"),
-            profiles=[Profile(network="GitHub", username="janedoe", url="https://github.com/janedoe")],
+            profiles=[
+                Profile(
+                    network="GitHub",
+                    username="janedoe",
+                    url="https://github.com/janedoe",
+                )
+            ],
         ),
         work=[
             Work(

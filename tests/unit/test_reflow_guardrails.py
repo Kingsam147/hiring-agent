@@ -50,8 +50,8 @@ def test_check_em_dashes_detects_em_dash_in_summary(fake_reflow_module):
 
 def test_check_fixed_metrics_detects_altered_metric(fake_reflow_module):
     candidate = reflow.build_candidate_from_module(fake_reflow_module)
-    candidate.experience[0].bullets[0] = candidate.experience[0].bullets[0].replace(
-        "1,384ms", "1384 ms"
+    candidate.experience[0].bullets[0] = (
+        candidate.experience[0].bullets[0].replace("1,384ms", "1384 ms")
     )
 
     problems = reflow.check_fixed_metrics(fake_reflow_module, candidate)
