@@ -7,23 +7,20 @@ from pdf import PDFHandler
 from github import fetch_and_display_github_info
 from models import (
     JSONResume,
-    EvaluationData,
     JobEvaluationData,
     RequirementGateResult,
     ModelProvider,
     get_gemini_daily_spend_line,
 )
 from typing import Optional
-from evaluator import ResumeEvaluator, JobDescriptionEvaluator
+from evaluator import JobDescriptionEvaluator
 from pathlib import Path
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, MODEL_PROVIDER_MAPPING
 from weight_profiles import WEIGHT_PROFILES, DEFAULT_PROFILE, suggest_profile
 from transform import (
-    transform_evaluation_response,
     transform_job_evaluation_response,
     convert_json_resume_to_text,
     convert_github_data_to_text,
-    convert_blog_data_to_text,
 )
 from config import DEVELOPMENT_MODE
 
@@ -65,36 +62,6 @@ def find_resume_file(folder: str = RESUME_FOLDER) -> str:
     return os.path.join(folder, files[0])
 
 
-def select_mode() -> int:
-    print("\nChoose scoring mode:")
-    print("  1. HackerRank Intern (original)")
-    print("  2. Custom Job Description")
-    while True:
-        choice = input("Enter choice (1 or 2): ").strip()
-        if choice in ("1", "2"):
-            return int(choice)
-        print("Invalid choice. Please enter 1 or 2.")
-
-
-def select_weight_profile() -> str:
-    profile_names = list(WEIGHT_PROFILES.keys())
-    print("\nChoose a weight profile (affects how category scores are combined):")
-    for i, name in enumerate(profile_names, 1):
-        default_marker = " (default)" if name == DEFAULT_PROFILE else ""
-        print(f"  {i}. {name}{default_marker}")
-    choice = input(f"Enter choice (1-{len(profile_names)}, Enter for default): ").strip()
-    if not choice:
-        return DEFAULT_PROFILE
-    try:
-        index = int(choice) - 1
-        if 0 <= index < len(profile_names):
-            return profile_names[index]
-    except ValueError:
-        pass
-    print(f"Invalid choice. Using default profile '{DEFAULT_PROFILE}'.")
-    return DEFAULT_PROFILE
-
-
 def load_job_description() -> str:
     if not os.path.exists(JOB_DESCRIPTION_PATH):
         print(f"Error: '{JOB_DESCRIPTION_PATH}' not found in the project root.")
@@ -107,102 +74,6 @@ def load_job_description() -> str:
         )
         sys.exit(1)
     return content
-
-
-def build_evaluation_markdown(
-    evaluation: EvaluationData, candidate_name: str = "Candidate"
-) -> str:
-    lines = [f"# Resume Evaluation Results: {candidate_name}"]
-
-    if not evaluation:
-        lines.append("\nNo evaluation data available.")
-        return "\n".join(lines)
-
-    total_score = 0
-    max_score = 0
-
-    if hasattr(evaluation, "scores") and evaluation.scores:
-        for category_name, category_data in evaluation.scores.model_dump().items():
-            category_score = min(category_data["score"], category_data["max"])
-            total_score += category_score
-            max_score += category_data["max"]
-
-            if category_score < category_data["score"]:
-                lines.append(
-                    f"\n> Warning: {category_name} score capped from {category_data['score']} "
-                    f"to {category_score} (max: {category_data['max']})"
-                )
-
-    if hasattr(evaluation, "bonus_points") and evaluation.bonus_points:
-        total_score += evaluation.bonus_points.total
-
-    if hasattr(evaluation, "deductions") and evaluation.deductions:
-        total_score -= evaluation.deductions.total
-
-    max_possible_score = max_score + 20
-    if total_score > max_possible_score:
-        total_score = max_possible_score
-        lines.append("\n> Warning: Total score capped at maximum possible value")
-
-    lines.append(f"\n**Overall Score:** {total_score:.1f}/{max_score}")
-    lines.append("\n## Detailed Scores")
-
-    if hasattr(evaluation, "scores") and evaluation.scores:
-        category_maxes = {
-            "open_source": 35,
-            "self_projects": 30,
-            "production": 25,
-            "technical_skills": 10,
-        }
-
-        if evaluation.scores.open_source:
-            os_score = evaluation.scores.open_source
-            capped_score = min(os_score.score, category_maxes["open_source"])
-            lines.append(f"\n**Open Source:** {capped_score}/{os_score.max}")
-            lines.append(f"- Evidence: {os_score.evidence}")
-
-        if evaluation.scores.self_projects:
-            sp_score = evaluation.scores.self_projects
-            capped_score = min(sp_score.score, category_maxes["self_projects"])
-            lines.append(f"\n**Self Projects:** {capped_score}/{sp_score.max}")
-            lines.append(f"- Evidence: {sp_score.evidence}")
-
-        if evaluation.scores.production:
-            prod_score = evaluation.scores.production
-            capped_score = min(prod_score.score, category_maxes["production"])
-            lines.append(f"\n**Production Experience:** {capped_score}/{prod_score.max}")
-            lines.append(f"- Evidence: {prod_score.evidence}")
-
-        if evaluation.scores.technical_skills:
-            tech_score = evaluation.scores.technical_skills
-            capped_score = min(tech_score.score, category_maxes["technical_skills"])
-            lines.append(f"\n**Technical Skills:** {capped_score}/{tech_score.max}")
-            lines.append(f"- Evidence: {tech_score.evidence}")
-
-    if hasattr(evaluation, "bonus_points") and evaluation.bonus_points:
-        lines.append(f"\n## Bonus Points: {evaluation.bonus_points.total}")
-        lines.append(f"- {evaluation.bonus_points.breakdown}")
-
-    if (
-        hasattr(evaluation, "deductions")
-        and evaluation.deductions
-        and evaluation.deductions.total > 0
-    ):
-        lines.append(f"\n## Deductions: -{evaluation.deductions.total}")
-        if evaluation.deductions.reasons:
-            lines.append(f"- {evaluation.deductions.reasons}")
-
-    if hasattr(evaluation, "key_strengths") and evaluation.key_strengths:
-        lines.append("\n## Key Strengths")
-        for strength in evaluation.key_strengths:
-            lines.append(f"- {strength}")
-
-    if hasattr(evaluation, "areas_for_improvement") and evaluation.areas_for_improvement:
-        lines.append("\n## Areas for Improvement")
-        for area in evaluation.areas_for_improvement:
-            lines.append(f"- {area}")
-
-    return "\n".join(lines)
 
 
 def build_job_evaluation_markdown(
@@ -361,25 +232,6 @@ def write_result_markdown(markdown: str) -> None:
     print(f"Report written to {RESULT_FILE_PATH}")
 
 
-def _evaluate_resume(
-    resume_data: JSONResume, github_data: dict = None, blog_data: dict = None
-) -> Optional[EvaluationData]:
-    model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
-    evaluator = ResumeEvaluator(model_name=DEFAULT_MODEL, model_params=model_params)
-
-    resume_text = convert_json_resume_to_text(resume_data)
-
-    if github_data:
-        github_text = convert_github_data_to_text(github_data)
-        resume_text += github_text
-
-    if blog_data:
-        blog_text = convert_blog_data_to_text(blog_data)
-        resume_text += blog_text
-
-    return evaluator.evaluate_resume(resume_text)
-
-
 def _knockout_resolver(qualification: str) -> Optional[bool]:
     print(f'\nMust-have could not be auto-verified: "{qualification}"')
     while True:
@@ -418,16 +270,11 @@ def find_profile(profiles, network):
 def main():
     pdf_path = find_resume_file()
 
-    mode = select_mode()
-
     if MODEL_PROVIDER_MAPPING.get(DEFAULT_MODEL) == ModelProvider.GEMINI:
         print(f"Gemini spend so far today: {get_gemini_daily_spend_line(DEFAULT_MODEL)}")
 
-    job_description = None
-    weight_profile = DEFAULT_PROFILE
-    if mode == 2:
-        job_description = load_job_description()
-        weight_profile = select_weight_profile()
+    job_description = load_job_description()
+    weight_profile = "engineering"
 
     resume_file_stem = os.path.splitext(os.path.basename(pdf_path))[0]
     cache_filename = f"cache/resumecache_{resume_file_stem}.json"
@@ -485,23 +332,21 @@ def main():
     ):
         candidate_name = resume_data.basics.name
 
-    job_evaluator = None
-    if mode == 2:
-        model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
-        job_evaluator = JobDescriptionEvaluator(
-            job_description=job_description,
-            model_name=DEFAULT_MODEL,
-            model_params=model_params,
-            weight_profile=weight_profile,
-        )
-        gate_resume_text = convert_json_resume_to_text(resume_data)
-        gate_result = job_evaluator.check_requirements(
-            gate_resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
-        )
-        if not gate_result.passed:
-            markdown = build_flagged_report_markdown(gate_result, candidate_name)
-            write_result_markdown(markdown)
-            return gate_result
+    model_params = MODEL_PARAMETERS.get(DEFAULT_MODEL)
+    job_evaluator = JobDescriptionEvaluator(
+        job_description=job_description,
+        model_name=DEFAULT_MODEL,
+        model_params=model_params,
+        weight_profile=weight_profile,
+    )
+    gate_resume_text = convert_json_resume_to_text(resume_data)
+    gate_result = job_evaluator.check_requirements(
+        gate_resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
+    )
+    if not gate_result.passed:
+        markdown = build_flagged_report_markdown(gate_result, candidate_name)
+        write_result_markdown(markdown)
+        return gate_result
 
     github_data = {}
     github_cache_loaded = False
@@ -556,54 +401,31 @@ def main():
                     encoding="utf-8",
                 )
 
-    if mode == 1:
-        score = _evaluate_resume(resume_data, github_data)
-        write_result_markdown(build_evaluation_markdown(score, candidate_name))
+    resume_text = convert_json_resume_to_text(resume_data)
+    if github_data:
+        resume_text += convert_github_data_to_text(github_data)
 
-        if DEVELOPMENT_MODE:
-            csv_row = transform_evaluation_response(
-                file_name=os.path.basename(pdf_path),
-                evaluation=score,
-                resume_data=resume_data,
-                github_data=github_data,
-            )
-            csv_path = "resume_evaluations.csv"
-            file_exists = os.path.exists(csv_path)
-            with open(csv_path, "a", newline="", encoding="utf-8") as csvfile:
-                fieldnames = list(csv_row.keys())
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(csv_row)
+    job_evaluation = job_evaluator.evaluate(
+        resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
+    )
+    write_result_markdown(build_job_evaluation_markdown(job_evaluation, candidate_name))
 
-        return score
-
-    else:
-        resume_text = convert_json_resume_to_text(resume_data)
-        if github_data:
-            resume_text += convert_github_data_to_text(github_data)
-
-        job_evaluation = job_evaluator.evaluate(
-            resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
+    if DEVELOPMENT_MODE:
+        csv_row = transform_job_evaluation_response(
+            file_name=os.path.basename(pdf_path),
+            evaluation=job_evaluation,
+            resume_data=resume_data,
         )
-        write_result_markdown(build_job_evaluation_markdown(job_evaluation, candidate_name))
+        csv_path = "job_evaluations.csv"
+        file_exists = os.path.exists(csv_path)
+        with open(csv_path, "a", newline="", encoding="utf-8") as csvfile:
+            fieldnames = list(csv_row.keys())
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(csv_row)
 
-        if DEVELOPMENT_MODE:
-            csv_row = transform_job_evaluation_response(
-                file_name=os.path.basename(pdf_path),
-                evaluation=job_evaluation,
-                resume_data=resume_data,
-            )
-            csv_path = "job_evaluations.csv"
-            file_exists = os.path.exists(csv_path)
-            with open(csv_path, "a", newline="", encoding="utf-8") as csvfile:
-                fieldnames = list(csv_row.keys())
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(csv_row)
-
-        return job_evaluation
+    return job_evaluation
 
 
 if __name__ == "__main__":
