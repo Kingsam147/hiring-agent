@@ -164,3 +164,129 @@ def load_skills_bank() -> str:
         if line.strip() and not line.strip().startswith(("#", "["))
     ]
     return content if meaningful_lines else ""
+
+
+class TailoredSkill(BaseModel):
+    label: str
+    rest: str
+
+
+class TailoredEntry(BaseModel):
+    title: str
+    bullets: List[str]
+
+
+class TailoredResume(BaseModel):
+    summary: str
+    skills: List[TailoredSkill]
+    experience: List[TailoredEntry]
+    projects: List[TailoredEntry]
+
+
+def build_candidate_from_module(module) -> TailoredResume:
+    return TailoredResume(
+        summary=module.SUMMARY,
+        skills=[TailoredSkill(label=label, rest=rest) for label, rest in module.SKILLS],
+        experience=[
+            TailoredEntry(title=entry["title"], bullets=list(entry["bullets"]))
+            for entry in module.EXPERIENCE
+        ],
+        projects=[
+            TailoredEntry(title=entry["title"], bullets=list(entry["bullets"]))
+            for entry in module.PROJECTS
+        ],
+    )
+
+
+MAX_BULLET_LINES = 2
+
+
+def _replay_vertical_layout(module, candidate: TailoredResume) -> float:
+    """Mirror build()'s vertical accumulation for a candidate's content.
+
+    Returns the top-of-line coordinate (from the page top) of the final
+    ACTIVITIES line. Must stay in lockstep with reflow_resume.build().
+    """
+    wrap = module._wrap
+    leading = module.LEADING
+
+    top = 75.0
+
+    summary_lines = wrap(
+        candidate.summary, module.F_REG, module.SZ_BODY, module.TEXT_RIGHT - module.BODY_X
+    )
+    y = top + module.GAP_HEADER_TO_BODY
+    last = y + (len(summary_lines) - 1) * leading
+    top = last + module.GAP_SECTION
+
+    y = top + module.GAP_HEADER_TO_SKILLS
+    last = y + (len(candidate.skills) - 1) * leading
+    top = last + module.GAP_SECTION
+
+    for entries, gap_header_to_entry in (
+        (candidate.experience, module.GAP_HEADER_TO_ENTRY_EXP),
+        (candidate.projects, module.GAP_HEADER_TO_ENTRY_PROJ),
+    ):
+        y = top + gap_header_to_entry
+        last = y
+        for entry in entries:
+            bullet_top = y + module.GAP_ENTRY_TITLE_TO_BULLET
+            for bullet_text in entry.bullets:
+                line_count = len(
+                    wrap(
+                        bullet_text,
+                        module.F_REG,
+                        module.SZ_BODY,
+                        module.TEXT_RIGHT - module.BULLET_TEXT_X,
+                    )
+                )
+                bullet_top += line_count * leading
+            last = bullet_top - leading
+            y = last + module.GAP_ENTRY_TO_ENTRY
+        top = last + module.GAP_SECTION
+
+    y = top + module.GAP_HEADER_TO_BODY
+    top = y + 16.2  # inline literal in build()'s EDUCATION section — keep in sync
+
+    y = top + module.GAP_HEADER_TO_SKILLS
+    return y
+
+
+def check_layout_fit(module, candidate: TailoredResume) -> List[str]:
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    problems = []
+
+    skills_line_width = module.TEXT_RIGHT - module.BODY_X
+    for skill in candidate.skills:
+        label_width = stringWidth(skill.label, module.F_BOLD, module.SZ_BODY)
+        rest_width = stringWidth(skill.rest, module.F_REG, module.SZ_BODY)
+        if label_width + rest_width > skills_line_width:
+            problems.append(
+                f'skills line "{skill.label.strip()}" is too wide for one printed '
+                "line; shorten its content"
+            )
+
+    bullet_width = module.TEXT_RIGHT - module.BULLET_TEXT_X
+    for section_name, entries in (
+        ("experience", candidate.experience),
+        ("projects", candidate.projects),
+    ):
+        for entry in entries:
+            for bullet_index, bullet_text in enumerate(entry.bullets, 1):
+                line_count = len(
+                    module._wrap(bullet_text, module.F_REG, module.SZ_BODY, bullet_width)
+                )
+                if line_count > MAX_BULLET_LINES:
+                    problems.append(
+                        f'{section_name} entry "{entry.title}" bullet {bullet_index} '
+                        f"wraps to {line_count} lines (max {MAX_BULLET_LINES}); shorten it"
+                    )
+
+    final_line_top = _replay_vertical_layout(module, candidate)
+    if final_line_top + module.LEADING > module.PAGE_H:
+        problems.append(
+            f"content runs to {final_line_top:.1f}pt from the page top and overflows "
+            f"the {module.PAGE_H:.0f}pt page; shorten the summary or bullets"
+        )
+    return problems
