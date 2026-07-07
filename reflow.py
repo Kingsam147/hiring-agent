@@ -625,3 +625,135 @@ def run_reflow_loop(
             break
 
     return best_candidate, best_score, score_history
+
+
+def resolve_band(score: float) -> Optional[str]:
+    if score < 70:
+        return None
+    if score < 80:
+        return "70% - 80%"
+    if score < 90:
+        return "80% - 90%"
+    return "90%+"
+
+
+def _serialize_summary(summary: str) -> str:
+    return f"SUMMARY = (\n    {summary!r}\n)\n\n"
+
+
+def _serialize_skills(skills: List[TailoredSkill]) -> str:
+    lines = ["SKILLS = ["]
+    for skill in skills:
+        lines.append(f"    ({skill.label!r},")
+        lines.append(f"     {skill.rest!r}),")
+    lines.append("]")
+    return "\n".join(lines) + "\n\n"
+
+
+def _serialize_entries(
+    variable_name: str, entries: List[TailoredEntry], original_entries
+) -> str:
+    lines = [f"{variable_name} = ["]
+    for tailored_entry, original_entry in zip(entries, original_entries):
+        lines.append(f'    {{"title": {tailored_entry.title!r},')
+        lines.append(f'     "meta": {original_entry["meta"]!r},')
+        lines.append('     "bullets": [')
+        for bullet_text in tailored_entry.bullets:
+            lines.append(f"        {bullet_text!r},")
+        lines.append("     ]},")
+    lines.append("]")
+    return "\n".join(lines) + "\n\n"
+
+
+def _replace_source_block(source: str, start_anchor: str, end_anchor: str, replacement: str) -> str:
+    start_index = source.index("\n" + start_anchor) + 1
+    end_index = source.index("\n" + end_anchor) + 1
+    return source[:start_index] + replacement + source[end_index:]
+
+
+def write_tailored_generator(candidate: TailoredResume, reflow_module) -> None:
+    source = REFLOW_RESUME_PATH.read_text(encoding="utf-8")
+    source = _replace_source_block(
+        source, "SUMMARY = (", "# (bold label, regular remainder)",
+        _serialize_summary(candidate.summary),
+    )
+    source = _replace_source_block(
+        source, "SKILLS = [", "EXPERIENCE = [", _serialize_skills(candidate.skills)
+    )
+    source = _replace_source_block(
+        source, "EXPERIENCE = [", "PROJECTS = [",
+        _serialize_entries("EXPERIENCE", candidate.experience, reflow_module.EXPERIENCE),
+    )
+    source = _replace_source_block(
+        source, "PROJECTS = [", "EDUCATION_LINE = ",
+        _serialize_entries("PROJECTS", candidate.projects, reflow_module.PROJECTS),
+    )
+    TAILORED_RESUME_PATH.write_text(source, encoding="utf-8")
+    print(f"Wrote {TAILORED_RESUME_PATH}")
+
+
+def main():
+    if not CLAUDE_API_KEY:
+        sys.exit(
+            "Error: CLAUDE_API_KEY is not set. Add it to your .env "
+            "(see .env.example) — reflow.py tailors with Claude Sonnet 5."
+        )
+
+    gap = parse_result_markdown()
+    print(f"Target role: {gap.job_title} | weight profile: {gap.weight_profile}")
+    print(f"Missing required skills: {gap.missing_required_skills or 'none'}")
+    print(f"Missing preferred skills: {gap.missing_preferred_skills or 'none'}")
+
+    job_description = load_job_description()
+    original_resume = load_cached_resume()
+    reflow_module = load_reflow_resume_module()
+    skills_bank = load_skills_bank()
+    if not skills_bank:
+        print(
+            f"Note: '{SKILLS_BANK_PATH}' is empty — tailoring will only rework "
+            "content already in the resume."
+        )
+
+    original_resume_text = convert_json_resume_to_text(original_resume)
+    print("\nResolving must-have qualifications once, up front (answers are "
+          "frozen for every regrade in the loop):")
+    frozen_resolver = build_frozen_resolver(
+        job_description, gap.weight_profile, original_resume_text, original_resume
+    )
+
+    tailor_provider = initialize_llm_provider(TAILOR_MODEL)
+    template_manager = TemplateManager()
+
+    best_candidate, best_score, score_history = run_reflow_loop(
+        tailor_provider,
+        template_manager,
+        gap,
+        original_resume,
+        reflow_module,
+        skills_bank,
+        job_description,
+        frozen_resolver,
+    )
+
+    print("\n" + "=" * 60)
+    print(f"Score history: {score_history or 'no scored candidates'}")
+
+    band = resolve_band(best_score) if best_candidate is not None else None
+    if band is None:
+        print(
+            f"Best score {best_score if best_candidate else 'n/a'}/100 is below 70. "
+            "This job is not a compatible match for the current skills and "
+            "experience — no tailored resume written."
+        )
+        return
+
+    print(f"Best score: {best_score}/100 — band {band}")
+    write_tailored_generator(best_candidate, reflow_module)
+    print(
+        f"Render it with: python {TAILORED_RESUME_PATH} "
+        "(layout and render engine are byte-identical to reflow_resume.py)"
+    )
+
+
+if __name__ == "__main__":
+    main()
