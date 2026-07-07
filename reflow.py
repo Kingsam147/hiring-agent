@@ -65,7 +65,7 @@ def _line_value_with_prefix(lines: List[str], prefix: str) -> Optional[str]:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith(prefix):
-            return stripped[len(prefix):].strip()
+            return stripped[len(prefix) :].strip()
     return None
 
 
@@ -111,8 +111,12 @@ def parse_result_markdown(result_path: str = RESULT_FILE_PATH) -> GapAnalysis:
         return GapAnalysis(
             job_title=job_title or "Unknown role",
             weight_profile=weight_profile or "engineering",
-            missing_required_skills=_comma_list_after_header(lines, REQUIRED_MISSING_HEADER),
-            missing_preferred_skills=_comma_list_after_header(lines, PREFERRED_MISSING_HEADER),
+            missing_required_skills=_comma_list_after_header(
+                lines, REQUIRED_MISSING_HEADER
+            ),
+            missing_preferred_skills=_comma_list_after_header(
+                lines, PREFERRED_MISSING_HEADER
+            ),
             improvement_areas=_bullets_under_section(lines, IMPROVEMENT_SECTION_HEADER),
         )
 
@@ -120,7 +124,9 @@ def parse_result_markdown(result_path: str = RESULT_FILE_PATH) -> GapAnalysis:
         job_title = _line_value_with_prefix(lines, TARGET_ROLE_PREFIX)
         return GapAnalysis(
             job_title=job_title or "Unknown role",
-            missing_required_skills=_bullets_under_section(lines, FEATURES_TO_ADD_HEADER),
+            missing_required_skills=_bullets_under_section(
+                lines, FEATURES_TO_ADD_HEADER
+            ),
         )
 
     sys.exit(
@@ -213,7 +219,10 @@ def _replay_vertical_layout(module, candidate: TailoredResume) -> float:
     top = 75.0
 
     summary_lines = wrap(
-        candidate.summary, module.F_REG, module.SZ_BODY, module.TEXT_RIGHT - module.BODY_X
+        candidate.summary,
+        module.F_REG,
+        module.SZ_BODY,
+        module.TEXT_RIGHT - module.BODY_X,
     )
     y = top + module.GAP_HEADER_TO_BODY
     last = y + (len(summary_lines) - 1) * leading
@@ -275,7 +284,9 @@ def check_layout_fit(module, candidate: TailoredResume) -> List[str]:
         for entry in entries:
             for bullet_index, bullet_text in enumerate(entry.bullets, 1):
                 line_count = len(
-                    module._wrap(bullet_text, module.F_REG, module.SZ_BODY, bullet_width)
+                    module._wrap(
+                        bullet_text, module.F_REG, module.SZ_BODY, bullet_width
+                    )
                 )
                 if line_count > MAX_BULLET_LINES:
                     problems.append(
@@ -325,7 +336,7 @@ def check_structure(module, candidate: TailoredResume) -> List[str]:
         for original_entry, tailored_entry in zip(original_entries, tailored_entries):
             if tailored_entry.title != original_entry["title"]:
                 problems.append(
-                    f'{section_name} title must stay verbatim: expected '
+                    f"{section_name} title must stay verbatim: expected "
                     f'"{original_entry["title"]}", got "{tailored_entry.title}"'
                 )
             if len(tailored_entry.bullets) != len(original_entry["bullets"]):
@@ -375,7 +386,7 @@ def check_fixed_metrics(module, candidate: TailoredResume) -> List[str]:
         missing_substrings = [s for s in metric_group if s not in entry_text]
         if missing_substrings:
             problems.append(
-                f'fixed metric(s) {missing_substrings} must appear verbatim in the '
+                f"fixed metric(s) {missing_substrings} must appear verbatim in the "
                 f'bullets of entry "{home_title}"'
             )
     return problems
@@ -401,7 +412,9 @@ def generate_tailored_candidate(
 ) -> Optional[TailoredResume]:
     retry_feedback = None
     for attempt in range(1, MAX_VALIDATION_RETRIES + 2):  # 1 try + 3 retries
-        system_message = template_manager.render_template("resume_reflow_system_message")
+        system_message = template_manager.render_template(
+            "resume_reflow_system_message"
+        )
         user_message = template_manager.render_template(
             "resume_reflow_user_message",
             job_title=gap.job_title,
@@ -430,7 +443,9 @@ def generate_tailored_candidate(
             response_text = extract_json_from_response(response["message"]["content"])
             candidate = TailoredResume(**json.loads(response_text))
         except Exception as parse_error:
-            logger.warning(f"Tailor attempt {attempt}: unparseable response ({parse_error})")
+            logger.warning(
+                f"Tailor attempt {attempt}: unparseable response ({parse_error})"
+            )
             retry_feedback = (
                 "Your previous reply was not valid JSON matching the required "
                 f"structure: {parse_error}. Return ONLY the JSON object."
@@ -441,10 +456,14 @@ def generate_tailored_candidate(
         if not problems:
             return candidate
 
-        logger.warning(f"Tailor attempt {attempt}: {len(problems)} guardrail problem(s)")
+        logger.warning(
+            f"Tailor attempt {attempt}: {len(problems)} guardrail problem(s)"
+        )
         retry_feedback = "; ".join(problems)
 
-    logger.warning("Discarding this iteration's candidate: guardrails still failing after retries.")
+    logger.warning(
+        "Discarding this iteration's candidate: guardrails still failing after retries."
+    )
     return None
 
 
@@ -492,7 +511,9 @@ def apply_candidate_to_resume(
     tailored_resume.skills = [
         Skill(
             name=skill.label.rstrip(": ").strip(),
-            keywords=[keyword.strip() for keyword in skill.rest.split(",") if keyword.strip()],
+            keywords=[
+                keyword.strip() for keyword in skill.rest.split(",") if keyword.strip()
+            ],
         )
         for skill in candidate.skills
     ]
@@ -593,14 +614,23 @@ def run_reflow_loop(
     for iteration in range(1, MAX_ITERATIONS + 1):
         print(f"\n=== Iteration {iteration}/{MAX_ITERATIONS} ===")
         candidate = generate_tailored_candidate(
-            tailor_provider, template_manager, gap, current_content, skills_bank, reflow_module
+            tailor_provider,
+            template_manager,
+            gap,
+            current_content,
+            skills_bank,
+            reflow_module,
         )
         if candidate is None:
-            print("No valid candidate this iteration (guardrails failed after retries).")
+            print(
+                "No valid candidate this iteration (guardrails failed after retries)."
+            )
             stagnant_iterations += 1
             if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
-                print("Stopping early: no improvement for "
-                      f"{MAX_STAGNANT_ITERATIONS} consecutive iterations.")
+                print(
+                    "Stopping early: no improvement for "
+                    f"{MAX_STAGNANT_ITERATIONS} consecutive iterations."
+                )
                 break
             continue
 
@@ -620,8 +650,10 @@ def run_reflow_loop(
             stagnant_iterations += 1
 
         if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
-            print("Stopping early: no improvement for "
-                  f"{MAX_STAGNANT_ITERATIONS} consecutive iterations.")
+            print(
+                "Stopping early: no improvement for "
+                f"{MAX_STAGNANT_ITERATIONS} consecutive iterations."
+            )
             break
 
     return best_candidate, best_score, score_history
@@ -665,7 +697,9 @@ def _serialize_entries(
     return "\n".join(lines) + "\n\n"
 
 
-def _replace_source_block(source: str, start_anchor: str, end_anchor: str, replacement: str) -> str:
+def _replace_source_block(
+    source: str, start_anchor: str, end_anchor: str, replacement: str
+) -> str:
     start_index = source.index("\n" + start_anchor) + 1
     end_index = source.index("\n" + end_anchor) + 1
     return source[:start_index] + replacement + source[end_index:]
@@ -674,18 +708,26 @@ def _replace_source_block(source: str, start_anchor: str, end_anchor: str, repla
 def write_tailored_generator(candidate: TailoredResume, reflow_module) -> None:
     source = REFLOW_RESUME_PATH.read_text(encoding="utf-8")
     source = _replace_source_block(
-        source, "SUMMARY = (", "# (bold label, regular remainder)",
+        source,
+        "SUMMARY = (",
+        "# (bold label, regular remainder)",
         _serialize_summary(candidate.summary),
     )
     source = _replace_source_block(
         source, "SKILLS = [", "EXPERIENCE = [", _serialize_skills(candidate.skills)
     )
     source = _replace_source_block(
-        source, "EXPERIENCE = [", "PROJECTS = [",
-        _serialize_entries("EXPERIENCE", candidate.experience, reflow_module.EXPERIENCE),
+        source,
+        "EXPERIENCE = [",
+        "PROJECTS = [",
+        _serialize_entries(
+            "EXPERIENCE", candidate.experience, reflow_module.EXPERIENCE
+        ),
     )
     source = _replace_source_block(
-        source, "PROJECTS = [", "EDUCATION_LINE = ",
+        source,
+        "PROJECTS = [",
+        "EDUCATION_LINE = ",
         _serialize_entries("PROJECTS", candidate.projects, reflow_module.PROJECTS),
     )
     TAILORED_RESUME_PATH.write_text(source, encoding="utf-8")
@@ -715,8 +757,10 @@ def main():
         )
 
     original_resume_text = convert_json_resume_to_text(original_resume)
-    print("\nResolving must-have qualifications once, up front (answers are "
-          "frozen for every regrade in the loop):")
+    print(
+        "\nResolving must-have qualifications once, up front (answers are "
+        "frozen for every regrade in the loop):"
+    )
     frozen_resolver = build_frozen_resolver(
         job_description, gap.weight_profile, original_resume_text, original_resume
     )

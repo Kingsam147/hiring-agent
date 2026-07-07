@@ -5,7 +5,16 @@ import re
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Tuple, Any, Literal, Protocol, runtime_checkable
+from typing import (
+    List,
+    Optional,
+    Dict,
+    Tuple,
+    Any,
+    Literal,
+    Protocol,
+    runtime_checkable,
+)
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
@@ -29,7 +38,7 @@ class LLMProvider(Protocol):
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to the LLM provider."""
         ...
@@ -271,7 +280,9 @@ class JobDescriptionData(BaseModel):
 
 class JobCategoryScore(BaseModel):
     score: float = Field(ge=0, le=100, description="Score for this category out of 100")
-    evidence: str = Field(min_length=1, description="Evidence from the resume supporting this score")
+    evidence: str = Field(
+        min_length=1, description="Evidence from the resume supporting this score"
+    )
 
 
 class JobScores(BaseModel):
@@ -408,7 +419,7 @@ class OllamaProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to Ollama."""
 
@@ -469,7 +480,9 @@ class GeminiSpendTracker:
 
     def _path(self, model: str) -> str:
         safe_model = re.sub(r"[^A-Za-z0-9._-]", "_", model)
-        return os.path.join(self.cache_dir, f"gemini_spend_{safe_model}_{self._today()}.json")
+        return os.path.join(
+            self.cache_dir, f"gemini_spend_{safe_model}_{self._today()}.json"
+        )
 
     def _read(self, model: str) -> Dict[str, Any]:
         path = self._path(model)
@@ -485,7 +498,9 @@ class GeminiSpendTracker:
                 "cost": float(data.get("cost", 0.0)),
             }
         except Exception as e:
-            logger.warning(f"Invalid Gemini spend file {path}: {e}. Treating today's totals as 0.")
+            logger.warning(
+                f"Invalid Gemini spend file {path}: {e}. Treating today's totals as 0."
+            )
             return default
 
     def _write(self, model: str, totals: Dict[str, Any]) -> None:
@@ -494,19 +509,27 @@ class GeminiSpendTracker:
             os.makedirs(self.cache_dir, exist_ok=True)
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump({"date": self._today(), "model": model, **totals}, f, indent=2)
+                json.dump(
+                    {"date": self._today(), "model": model, **totals}, f, indent=2
+                )
             os.replace(tmp_path, path)
         except Exception as e:
             logger.warning(f"Failed to write Gemini spend file {path}: {e}")
 
     @staticmethod
-    def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
+    def estimate_cost(
+        model: str, input_tokens: int, output_tokens: int
+    ) -> Optional[float]:
         pricing = GEMINI_PRICING_PER_MILLION_TOKENS.get(model)
         if pricing is None:
             return None
-        return (input_tokens / 1_000_000) * pricing["input"] + (output_tokens / 1_000_000) * pricing["output"]
+        return (input_tokens / 1_000_000) * pricing["input"] + (
+            output_tokens / 1_000_000
+        ) * pricing["output"]
 
-    def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> Tuple[Optional[float], Dict[str, Any]]:
+    def record_usage(
+        self, model: str, input_tokens: int, output_tokens: int
+    ) -> Tuple[Optional[float], Dict[str, Any]]:
         """Record one call's token usage. Returns (this_call_cost, today's running totals)."""
         call_cost = self.estimate_cost(model, input_tokens, output_tokens)
         with self._lock:
@@ -554,7 +577,7 @@ class GeminiProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send a chat request to Google Gemini API."""
         import re
@@ -594,7 +617,9 @@ class GeminiProvider:
                 usage = response.usage_metadata
                 input_tokens = usage.prompt_token_count
                 output_tokens = max(usage.total_token_count - input_tokens, 0)
-                call_cost, _ = _get_gemini_spend_tracker().record_usage(model, input_tokens, output_tokens)
+                call_cost, _ = _get_gemini_spend_tracker().record_usage(
+                    model, input_tokens, output_tokens
+                )
                 if call_cost is None:
                     print(
                         f"[GeminiProvider] {input_tokens + output_tokens} tokens used "
@@ -621,7 +646,7 @@ class GeminiProvider:
                 api_hint = float(match.group(1)) if match else None
 
                 # Exponential backoff: BASE_DELAY * 2^attempt, capped at MAX_DELAY
-                exp_delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
+                exp_delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
 
                 # Prefer the API hint when it is shorter than our computed delay
                 delay = api_hint if (api_hint and api_hint < exp_delay) else exp_delay
@@ -660,7 +685,7 @@ class ClaudeProvider:
         model: str,
         messages: List[Dict[str, str]],
         options: Dict[str, Any] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         system_parts = []
         conversation = []
@@ -685,7 +710,5 @@ class ClaudeProvider:
         if response.stop_reason == "max_tokens":
             logger.warning("[ClaudeProvider] Response truncated at max_tokens.")
 
-        text_parts = [
-            block.text for block in response.content if block.type == "text"
-        ]
+        text_parts = [block.text for block in response.content if block.type == "text"]
         return {"message": {"role": "assistant", "content": "".join(text_parts)}}

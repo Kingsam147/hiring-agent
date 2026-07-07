@@ -46,7 +46,9 @@ def keyword_found(keyword: str, normalized_corpus: str) -> bool:
     return re.search(pattern, normalized_corpus) is not None
 
 
-def build_match_corpus(resume_text: str, resume_data: Optional[JSONResume] = None) -> str:
+def build_match_corpus(
+    resume_text: str, resume_data: Optional[JSONResume] = None
+) -> str:
     parts = [resume_text]
 
     if resume_data is not None:
@@ -122,17 +124,28 @@ def compute_keyword_match(
 ) -> KeywordMatchResult:
     # Deferred import: skill_experience.py imports keyword_found/normalize_text
     # from this module, so importing it at module scope would be circular.
-    from skill_experience import compute_skill_experience, compute_total_experience_years
+    from skill_experience import (
+        compute_skill_experience,
+        compute_total_experience_years,
+    )
 
     normalized_corpus = build_match_corpus(resume_text, resume_data)
 
     required_skills = _dedupe_keywords(job_data.required_skills or [])
     preferred_skills = _dedupe_keywords(job_data.preferred_skills or [])
 
-    matched_required = [skill for skill in required_skills if keyword_found(skill, normalized_corpus)]
-    missing_required = [skill for skill in required_skills if skill not in matched_required]
-    matched_preferred = [skill for skill in preferred_skills if keyword_found(skill, normalized_corpus)]
-    missing_preferred = [skill for skill in preferred_skills if skill not in matched_preferred]
+    matched_required = [
+        skill for skill in required_skills if keyword_found(skill, normalized_corpus)
+    ]
+    missing_required = [
+        skill for skill in required_skills if skill not in matched_required
+    ]
+    matched_preferred = [
+        skill for skill in preferred_skills if keyword_found(skill, normalized_corpus)
+    ]
+    missing_preferred = [
+        skill for skill in preferred_skills if skill not in matched_preferred
+    ]
 
     must_have_status = [
         _must_have_status(qualification, normalized_corpus)
@@ -140,7 +153,10 @@ def compute_keyword_match(
     ]
 
     coverage = _weighted_coverage(
-        len(matched_required), len(required_skills), len(matched_preferred), len(preferred_skills)
+        len(matched_required),
+        len(required_skills),
+        len(matched_preferred),
+        len(preferred_skills),
     )
 
     gated = any(status.status == "not_found" for status in must_have_status)
@@ -183,7 +199,11 @@ def apply_knockout_resolutions(
             continue
 
         updated_status.append(
-            MustHaveStatus(qualification=status.qualification, status=status.status, resolved=answer)
+            MustHaveStatus(
+                qualification=status.qualification,
+                status=status.status,
+                resolved=answer,
+            )
         )
         if answer is False:
             knockout_failed = True
@@ -191,8 +211,10 @@ def apply_knockout_resolutions(
     required_total = len(result.matched_required) + len(result.missing_required)
     preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
     coverage_score = _weighted_coverage(
-        len(result.matched_required), required_total,
-        len(result.matched_preferred), preferred_total,
+        len(result.matched_required),
+        required_total,
+        len(result.matched_preferred),
+        preferred_total,
     )
 
     gated = any(
@@ -202,12 +224,14 @@ def apply_knockout_resolutions(
     if gated:
         coverage_score = min(coverage_score, GATE_CAP)
 
-    return result.model_copy(update={
-        "must_have_status": updated_status,
-        "gated": gated,
-        "coverage_score": round(coverage_score, 1),
-        "knockout_failed": knockout_failed,
-    })
+    return result.model_copy(
+        update={
+            "must_have_status": updated_status,
+            "gated": gated,
+            "coverage_score": round(coverage_score, 1),
+            "knockout_failed": knockout_failed,
+        }
+    )
 
 
 def apply_llm_recheck(
@@ -241,20 +265,28 @@ def apply_llm_recheck(
     required_total = len(matched_required) + len(missing_required)
     preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
     coverage = _weighted_coverage(
-        len(matched_required), required_total, len(result.matched_preferred), preferred_total
+        len(matched_required),
+        required_total,
+        len(result.matched_preferred),
+        preferred_total,
     )
 
-    gated = any(status.status != "found" and status.resolved is not True for status in updated_status)
+    gated = any(
+        status.status != "found" and status.resolved is not True
+        for status in updated_status
+    )
     if gated:
         coverage = min(coverage, GATE_CAP)
 
-    return result.model_copy(update={
-        "matched_required": matched_required,
-        "missing_required": missing_required,
-        "must_have_status": updated_status,
-        "coverage_score": round(coverage, 1),
-        "gated": gated,
-    })
+    return result.model_copy(
+        update={
+            "matched_required": matched_required,
+            "missing_required": missing_required,
+            "must_have_status": updated_status,
+            "coverage_score": round(coverage, 1),
+            "gated": gated,
+        }
+    )
 
 
 def build_skills_evidence(result: KeywordMatchResult) -> str:
@@ -263,7 +295,11 @@ def build_skills_evidence(result: KeywordMatchResult) -> str:
 
     parts = [
         f"Matched {len(result.matched_required)}/{total_required} required skills"
-        + (f" ({', '.join(result.matched_required)})" if result.matched_required else "")
+        + (
+            f" ({', '.join(result.matched_required)})"
+            if result.matched_required
+            else ""
+        )
         + "."
     ]
     if result.missing_required:
@@ -271,7 +307,11 @@ def build_skills_evidence(result: KeywordMatchResult) -> str:
     if total_preferred:
         parts.append(
             f"Matched {len(result.matched_preferred)}/{total_preferred} preferred skills"
-            + (f" ({', '.join(result.matched_preferred)})" if result.matched_preferred else "")
+            + (
+                f" ({', '.join(result.matched_preferred)})"
+                if result.matched_preferred
+                else ""
+            )
             + "."
         )
     if result.gated:
@@ -295,7 +335,9 @@ def compute_industry_mentions(
     if not industry or not industry.strip():
         return None
 
-    tokens = [token.strip() for token in _INDUSTRY_SPLIT.split(industry) if token.strip()]
+    tokens = [
+        token.strip() for token in _INDUSTRY_SPLIT.split(industry) if token.strip()
+    ]
     if not tokens:
         tokens = [industry.strip()]
 
@@ -309,4 +351,8 @@ def compute_industry_mentions(
             label = f"{work_item.name or 'Unknown company'} — {work_item.position or 'Unknown role'}"
             matched_entries.append(label)
 
-    return IndustryMatch(industry=industry, mention_count=len(matched_entries), matched_entries=matched_entries)
+    return IndustryMatch(
+        industry=industry,
+        mention_count=len(matched_entries),
+        matched_entries=matched_entries,
+    )

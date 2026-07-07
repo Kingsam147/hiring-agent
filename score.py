@@ -39,7 +39,9 @@ JOB_DESCRIPTION_PATH = "job_description.txt"
 
 def find_resume_file(folder: str = RESUME_FOLDER) -> str:
     if not os.path.isdir(folder):
-        print(f"Error: '{folder}/' folder not found. Create it and place your resume file inside.")
+        print(
+            f"Error: '{folder}/' folder not found. Create it and place your resume file inside."
+        )
         sys.exit(1)
 
     files = [
@@ -49,7 +51,9 @@ def find_resume_file(folder: str = RESUME_FOLDER) -> str:
     ]
 
     if not files:
-        print(f"Error: no resume file found in '{folder}/'. Place exactly one resume file there.")
+        print(
+            f"Error: no resume file found in '{folder}/'. Place exactly one resume file there."
+        )
         sys.exit(1)
 
     if len(files) > 1:
@@ -91,17 +95,34 @@ def build_job_evaluation_markdown(
         lines.append("\n## Why This Score")
         lines.append(evaluation.score_summary)
 
-    weights = WEIGHT_PROFILES.get(evaluation.weight_profile, WEIGHT_PROFILES[DEFAULT_PROFILE])
+    weights = WEIGHT_PROFILES.get(
+        evaluation.weight_profile, WEIGHT_PROFILES[DEFAULT_PROFILE]
+    )
 
     lines.append("\n## Category Breakdown")
 
     categories = [
-        (f"Skills Match ({weights['skills_match']:.0%})", evaluation.scores.skills_match),
-        (f"Experience Match ({weights['experience_match']:.0%})", evaluation.scores.experience_match),
-        (f"Title Alignment ({weights['job_title_alignment']:.0%})", evaluation.scores.job_title_alignment),
+        (
+            f"Skills Match ({weights['skills_match']:.0%})",
+            evaluation.scores.skills_match,
+        ),
+        (
+            f"Experience Match ({weights['experience_match']:.0%})",
+            evaluation.scores.experience_match,
+        ),
+        (
+            f"Title Alignment ({weights['job_title_alignment']:.0%})",
+            evaluation.scores.job_title_alignment,
+        ),
         (f"Education ({weights['education']:.0%})", evaluation.scores.education),
-        (f"Resume Quality ({weights['resume_quality']:.0%})", evaluation.scores.resume_quality),
-        (f"Missing Critical ({weights['missing_critical_requirements']:.0%})", evaluation.scores.missing_critical_requirements),
+        (
+            f"Resume Quality ({weights['resume_quality']:.0%})",
+            evaluation.scores.resume_quality,
+        ),
+        (
+            f"Missing Critical ({weights['missing_critical_requirements']:.0%})",
+            evaluation.scores.missing_critical_requirements,
+        ),
     ]
 
     for label, category in categories:
@@ -117,7 +138,9 @@ def build_job_evaluation_markdown(
     lines.append(
         f"\n**Semantic Match ({weights['semantic_match']:.0%}):** {evaluation.semantic_match_score:.1f}/100"
     )
-    lines.append("- Whole-document embedding similarity (all-MiniLM-L6-v2) — supplementary signal.")
+    lines.append(
+        "- Whole-document embedding similarity (all-MiniLM-L6-v2) — supplementary signal."
+    )
 
     if evaluation.keyword_match:
         keyword_match = evaluation.keyword_match
@@ -127,18 +150,42 @@ def build_job_evaluation_markdown(
             coverage_line += " [CAPPED — a must-have qualification was not found]"
         lines.append(coverage_line)
 
-        total_required = len(keyword_match.matched_required) + len(keyword_match.missing_required)
-        lines.append(f"\n**Required skills matched ({len(keyword_match.matched_required)}/{total_required}):**")
-        lines.append(", ".join(keyword_match.matched_required) if keyword_match.matched_required else "None")
+        total_required = len(keyword_match.matched_required) + len(
+            keyword_match.missing_required
+        )
+        lines.append(
+            f"\n**Required skills matched ({len(keyword_match.matched_required)}/{total_required}):**"
+        )
+        lines.append(
+            ", ".join(keyword_match.matched_required)
+            if keyword_match.matched_required
+            else "None"
+        )
         lines.append("\n**Required skills MISSING:**")
-        lines.append(", ".join(keyword_match.missing_required) if keyword_match.missing_required else "None")
+        lines.append(
+            ", ".join(keyword_match.missing_required)
+            if keyword_match.missing_required
+            else "None"
+        )
 
-        total_preferred = len(keyword_match.matched_preferred) + len(keyword_match.missing_preferred)
+        total_preferred = len(keyword_match.matched_preferred) + len(
+            keyword_match.missing_preferred
+        )
         if total_preferred:
-            lines.append(f"\n**Preferred skills matched ({len(keyword_match.matched_preferred)}/{total_preferred}):**")
-            lines.append(", ".join(keyword_match.matched_preferred) if keyword_match.matched_preferred else "None")
+            lines.append(
+                f"\n**Preferred skills matched ({len(keyword_match.matched_preferred)}/{total_preferred}):**"
+            )
+            lines.append(
+                ", ".join(keyword_match.matched_preferred)
+                if keyword_match.matched_preferred
+                else "None"
+            )
             lines.append("\n**Preferred skills missing:**")
-            lines.append(", ".join(keyword_match.missing_preferred) if keyword_match.missing_preferred else "None")
+            lines.append(
+                ", ".join(keyword_match.missing_preferred)
+                if keyword_match.missing_preferred
+                else "None"
+            )
 
         if keyword_match.must_have_status:
             lines.append("\n**Must-have qualifications:**")
@@ -163,7 +210,10 @@ def build_job_evaluation_markdown(
                     lines.append(f"- {skill_exp.skill}: {skill_exp.years} yrs")
                 else:
                     lines.append(f"- {skill_exp.skill}: no dated evidence")
-            if evaluation.jd_years_of_experience is not None and keyword_match.estimated_total_years is not None:
+            if (
+                evaluation.jd_years_of_experience is not None
+                and keyword_match.estimated_total_years is not None
+            ):
                 lines.append(
                     f"- JD asks for {evaluation.jd_years_of_experience} yrs; candidate total "
                     f"~{keyword_match.estimated_total_years} yrs (from parseable work dates)"
@@ -183,7 +233,8 @@ def build_job_evaluation_markdown(
                 )
 
         suggested_profile = suggest_profile(
-            evaluation.job_title, evaluation.industry_match.industry if evaluation.industry_match else None
+            evaluation.job_title,
+            evaluation.industry_match.industry if evaluation.industry_match else None,
         )
         if suggested_profile != evaluation.weight_profile:
             lines.append(
@@ -271,7 +322,9 @@ def main():
     pdf_path = find_resume_file()
 
     if MODEL_PROVIDER_MAPPING.get(DEFAULT_MODEL) == ModelProvider.GEMINI:
-        print(f"Gemini spend so far today: {get_gemini_daily_spend_line(DEFAULT_MODEL)}")
+        print(
+            f"Gemini spend so far today: {get_gemini_daily_spend_line(DEFAULT_MODEL)}"
+        )
 
     job_description = load_job_description()
     weight_profile = "engineering"
@@ -283,7 +336,11 @@ def main():
     resume_data = None
     cache_loaded = False
 
-    if DEVELOPMENT_MODE and os.path.exists(cache_filename) and os.path.getmtime(cache_filename) >= os.path.getmtime(pdf_path):
+    if (
+        DEVELOPMENT_MODE
+        and os.path.exists(cache_filename)
+        and os.path.getmtime(cache_filename) >= os.path.getmtime(pdf_path)
+    ):
         print(f"Loading cached data from {cache_filename}")
         try:
             cached_data = json.loads(Path(cache_filename).read_text(encoding="utf-8"))
@@ -298,7 +355,9 @@ def main():
             try:
                 os.remove(cache_filename)
             except Exception as delete_err:
-                print(f"Failed to delete invalid cache file {cache_filename}: {delete_err}")
+                print(
+                    f"Failed to delete invalid cache file {cache_filename}: {delete_err}"
+                )
 
     if not cache_loaded:
         logger.debug(
@@ -370,7 +429,9 @@ def main():
             try:
                 os.remove(github_cache_filename)
             except Exception as delete_err:
-                print(f"Failed to delete invalid GitHub cache file {github_cache_filename}: {delete_err}")
+                print(
+                    f"Failed to delete invalid GitHub cache file {github_cache_filename}: {delete_err}"
+                )
 
     if not github_cache_loaded:
         profiles = []

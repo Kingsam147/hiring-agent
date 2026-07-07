@@ -60,7 +60,9 @@ def initialize_llm_provider(model_name: str) -> Any:
         if not CLAUDE_API_KEY:
             logger.warning("⚠️ Claude API key not found. Falling back to Ollama.")
         else:
-            logger.info(f"🔄 Using Anthropic Claude API provider with model {model_name}")
+            logger.info(
+                f"🔄 Using Anthropic Claude API provider with model {model_name}"
+            )
             provider = ClaudeProvider(api_key=CLAUDE_API_KEY)
     else:
         logger.info(f"🔄 Using Ollama provider with model {model_name}")

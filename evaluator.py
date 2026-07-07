@@ -142,7 +142,9 @@ def _read_llm_cache(path: str, model_cls: Type[BaseModel]) -> Optional[BaseModel
             cached_data = json.load(cache_file)
         return model_cls(**cached_data)
     except Exception as e:
-        logger.warning(f"⚠️ Warning: Invalid cache file {path}: {e}. Ignoring cache and re-running LLM call.")
+        logger.warning(
+            f"⚠️ Warning: Invalid cache file {path}: {e}. Ignoring cache and re-running LLM call."
+        )
         try:
             os.remove(path)
         except Exception as delete_err:
@@ -189,11 +191,14 @@ class JobDescriptionEvaluator:
 
     def _load_embedding_model(self):
         from sentence_transformers import SentenceTransformer
+
         logger.info("Loading Sentence Transformers model (all-MiniLM-L6-v2)...")
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_job_requirements(self) -> JobDescriptionData:
-        cache_path = f"cache/jdreqcache_{_hash_key(self.model_name, self.job_description)}.json"
+        cache_path = (
+            f"cache/jdreqcache_{_hash_key(self.model_name, self.job_description)}.json"
+        )
         cached = _read_llm_cache(cache_path, JobDescriptionData)
         if cached is not None:
             logger.info(f"Loaded job requirements from cache {cache_path}")
@@ -217,7 +222,9 @@ class JobDescriptionEvaluator:
             "options": self.model_params,
         }
 
-        response = self.provider.chat(**chat_params, format=JobDescriptionData.model_json_schema())
+        response = self.provider.chat(
+            **chat_params, format=JobDescriptionData.model_json_schema()
+        )
         response_text = extract_json_from_response(response["message"]["content"])
         job_data = JobDescriptionData(**json.loads(response_text))
         _write_llm_cache(cache_path, job_data)
@@ -225,8 +232,13 @@ class JobDescriptionEvaluator:
 
     def compute_semantic_score(self, resume_text: str) -> float:
         from sentence_transformers import util
-        job_embedding = self.embedding_model.encode(self.job_description, convert_to_tensor=True)
-        resume_embedding = self.embedding_model.encode(resume_text, convert_to_tensor=True)
+
+        job_embedding = self.embedding_model.encode(
+            self.job_description, convert_to_tensor=True
+        )
+        resume_embedding = self.embedding_model.encode(
+            resume_text, convert_to_tensor=True
+        )
         similarity = util.cos_sim(job_embedding, resume_embedding).item()
         return round(max(0.0, similarity) * 100, 1)
 
@@ -246,7 +258,9 @@ class JobDescriptionEvaluator:
             logger.info(f"Loaded job evaluation from cache {cache_path}")
             return cached
 
-        system_message = self.template_manager.render_template("job_evaluation_system_message")
+        system_message = self.template_manager.render_template(
+            "job_evaluation_system_message"
+        )
         if system_message is None:
             raise ValueError("Failed to render job_evaluation_system_message template")
 
@@ -282,7 +296,9 @@ class JobDescriptionEvaluator:
             },
         }
 
-        response = self.provider.chat(**chat_params, format=LLMJobEvaluationResponse.model_json_schema())
+        response = self.provider.chat(
+            **chat_params, format=LLMJobEvaluationResponse.model_json_schema()
+        )
         response_text = extract_json_from_response(response["message"]["content"])
         logger.info(f"Job evaluation LLM response: {response_text}")
         evaluation_response = LLMJobEvaluationResponse(**json.loads(response_text))
@@ -292,11 +308,11 @@ class JobDescriptionEvaluator:
     def generate_score_summary(self, evaluation: JobEvaluationData) -> Optional[str]:
         try:
             canonical_payload = json.dumps(
-                evaluation.model_dump(exclude={"score_summary"}), sort_keys=True, ensure_ascii=False
+                evaluation.model_dump(exclude={"score_summary"}),
+                sort_keys=True,
+                ensure_ascii=False,
             )
-            cache_path = (
-                f"cache/summarycache_{_hash_key(self.model_name, SUMMARY_PROMPT_VERSION, canonical_payload)}.json"
-            )
+            cache_path = f"cache/summarycache_{_hash_key(self.model_name, SUMMARY_PROMPT_VERSION, canonical_payload)}.json"
             cached = _read_llm_cache(cache_path, ScoreSummary)
             if cached is not None:
                 logger.info(f"Loaded score summary from cache {cache_path}")
@@ -341,7 +357,9 @@ class JobDescriptionEvaluator:
             logger.warning(f"Failed to generate score summary: {e}")
             return None
 
-    def _compute_weighted_total(self, scores: JobScores, semantic_score: float) -> float:
+    def _compute_weighted_total(
+        self, scores: JobScores, semantic_score: float
+    ) -> float:
         total = (
             scores.skills_match.score * self.weights["skills_match"]
             + scores.experience_match.score * self.weights["experience_match"]
@@ -349,24 +367,27 @@ class JobDescriptionEvaluator:
             + scores.job_title_alignment.score * self.weights["job_title_alignment"]
             + scores.education.score * self.weights["education"]
             + scores.resume_quality.score * self.weights["resume_quality"]
-            + scores.missing_critical_requirements.score * self.weights["missing_critical_requirements"]
+            + scores.missing_critical_requirements.score
+            * self.weights["missing_critical_requirements"]
         )
         return round(min(total, 100.0), 1)
 
     def _llm_recheck_requirements(
         self, resume_text: str, requirements: List[str]
     ) -> Dict[str, RequirementVerdict]:
-        cache_path = (
-            f"cache/reqcheckcache_{_hash_key(self.model_name, RECHECK_PROMPT_VERSION, resume_text, *requirements)}.json"
-        )
+        cache_path = f"cache/reqcheckcache_{_hash_key(self.model_name, RECHECK_PROMPT_VERSION, resume_text, *requirements)}.json"
         cached = _read_llm_cache(cache_path, RequirementRecheckResponse)
         if cached is not None:
             logger.info(f"Loaded requirement recheck from cache {cache_path}")
             return {verdict.requirement: verdict for verdict in cached.verdicts}
 
-        system_message = self.template_manager.render_template("requirement_recheck_system_message")
+        system_message = self.template_manager.render_template(
+            "requirement_recheck_system_message"
+        )
         if system_message is None:
-            raise ValueError("Failed to render requirement_recheck_system_message template")
+            raise ValueError(
+                "Failed to render requirement_recheck_system_message template"
+            )
 
         prompt = self.template_manager.render_template(
             "requirement_recheck", requirements=requirements, resume_text=resume_text
@@ -387,7 +408,9 @@ class JobDescriptionEvaluator:
             },
         }
 
-        response = self.provider.chat(**chat_params, format=RequirementRecheckResponse.model_json_schema())
+        response = self.provider.chat(
+            **chat_params, format=RequirementRecheckResponse.model_json_schema()
+        )
         response_text = extract_json_from_response(response["message"]["content"])
         recheck_response = RequirementRecheckResponse(**json.loads(response_text))
         _write_llm_cache(cache_path, recheck_response)
@@ -402,7 +425,9 @@ class JobDescriptionEvaluator:
     ) -> RequirementGateResult:
         logger.info("Extracting requirements from job description...")
         job_data = self.extract_job_requirements()
-        logger.info(f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}")
+        logger.info(
+            f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}"
+        )
 
         logger.info("Computing deterministic keyword match...")
         keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
@@ -413,7 +438,9 @@ class JobDescriptionEvaluator:
             if status.status in ("not_found", "unverifiable")
         ]
         if recheck_candidates:
-            logger.info(f"Rechecking {len(recheck_candidates)} unresolved requirement(s) with the LLM...")
+            logger.info(
+                f"Rechecking {len(recheck_candidates)} unresolved requirement(s) with the LLM..."
+            )
             verdicts = self._llm_recheck_requirements(resume_text, recheck_candidates)
             keyword_result = apply_llm_recheck(keyword_result, verdicts)
 
@@ -451,24 +478,32 @@ class JobDescriptionEvaluator:
         knockout_resolver: Optional[Callable[[str], Optional[bool]]] = None,
     ) -> JobEvaluationData:
         if self._job_data is not None and self._keyword_result is not None:
-            logger.info("Reusing job requirements and keyword match from check_requirements().")
+            logger.info(
+                "Reusing job requirements and keyword match from check_requirements()."
+            )
             job_data = self._job_data
             keyword_result = self._keyword_result
         else:
             logger.info("Extracting requirements from job description...")
             job_data = self.extract_job_requirements()
-            logger.info(f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}")
+            logger.info(
+                f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}"
+            )
 
             logger.info("Computing deterministic keyword match...")
             keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
-            keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
+            keyword_result = apply_knockout_resolutions(
+                keyword_result, knockout_resolver
+            )
 
         logger.info(
             f"Keyword coverage: {keyword_result.coverage_score} | "
             f"Missing required: {keyword_result.missing_required}"
         )
         if keyword_result.knockout_failed:
-            logger.info("A must-have qualification was rejected by the reviewer — capping score.")
+            logger.info(
+                "A must-have qualification was rejected by the reviewer — capping score."
+            )
 
         if self.embedding_model is None:
             self._load_embedding_model()
@@ -488,7 +523,9 @@ class JobDescriptionEvaluator:
         logger.info(f"Semantic match score: {semantic_score}")
 
         logger.info("Scoring resume against job requirements...")
-        llm_result = self._score_resume(resume_text, job_data, keyword_result, seniority)
+        llm_result = self._score_resume(
+            resume_text, job_data, keyword_result, seniority
+        )
 
         scores = JobScores(
             skills_match=JobCategoryScore(
