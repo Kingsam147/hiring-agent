@@ -290,3 +290,159 @@ def check_layout_fit(module, candidate: TailoredResume) -> List[str]:
             f"the {module.PAGE_H:.0f}pt page; shorten the summary or bullets"
         )
     return problems
+
+
+EM_DASH = "—"
+
+FIXED_METRIC_GROUPS = [
+    ("1,384ms", "196ms"),
+    ("~$60", "~$0.38"),
+    ("5-10x",),
+    ("32 REST endpoints",),
+    ("500+ stars",),
+    ("1,200+", "900+", "300+"),
+    ("PR #283",),
+    ("PR #822",),
+]
+
+
+def check_structure(module, candidate: TailoredResume) -> List[str]:
+    problems = []
+    if len(candidate.skills) != len(module.SKILLS):
+        problems.append(
+            f"expected {len(module.SKILLS)} skills lines, got {len(candidate.skills)}"
+        )
+    for original_entries, tailored_entries, section_name in (
+        (module.EXPERIENCE, candidate.experience, "experience"),
+        (module.PROJECTS, candidate.projects, "projects"),
+    ):
+        if len(tailored_entries) != len(original_entries):
+            problems.append(
+                f"expected {len(original_entries)} {section_name} entries, "
+                f"got {len(tailored_entries)}"
+            )
+            continue
+        for original_entry, tailored_entry in zip(original_entries, tailored_entries):
+            if tailored_entry.title != original_entry["title"]:
+                problems.append(
+                    f'{section_name} title must stay verbatim: expected '
+                    f'"{original_entry["title"]}", got "{tailored_entry.title}"'
+                )
+            if len(tailored_entry.bullets) != len(original_entry["bullets"]):
+                problems.append(
+                    f'{section_name} entry "{original_entry["title"]}" must keep '
+                    f'{len(original_entry["bullets"])} bullets, got '
+                    f"{len(tailored_entry.bullets)}"
+                )
+    return problems
+
+
+def check_em_dashes(candidate: TailoredResume) -> List[str]:
+    problems = []
+    if EM_DASH in candidate.summary:
+        problems.append("summary contains an em dash; replace it")
+    for skill in candidate.skills:
+        if EM_DASH in skill.label + skill.rest:
+            problems.append(f'skills line "{skill.label.strip()}" contains an em dash')
+    for entry in candidate.experience + candidate.projects:
+        if EM_DASH in entry.title or any(EM_DASH in bullet for bullet in entry.bullets):
+            problems.append(f'entry "{entry.title}" contains an em dash')
+    return problems
+
+
+def _metric_home_entries(module) -> Dict[Tuple[str, ...], str]:
+    """Map each fixed-metric group to the title of the entry whose bullets
+    contain it in the original, unmodified reflow_resume content."""
+    homes = {}
+    original_entries = list(module.EXPERIENCE) + list(module.PROJECTS)
+    for metric_group in FIXED_METRIC_GROUPS:
+        for entry in original_entries:
+            joined_bullets = " ".join(entry["bullets"])
+            if all(substring in joined_bullets for substring in metric_group):
+                homes[metric_group] = entry["title"]
+                break
+    return homes
+
+
+def check_fixed_metrics(module, candidate: TailoredResume) -> List[str]:
+    problems = []
+    candidate_bullets_by_title = {
+        entry.title: " ".join(entry.bullets)
+        for entry in candidate.experience + candidate.projects
+    }
+    for metric_group, home_title in _metric_home_entries(module).items():
+        entry_text = candidate_bullets_by_title.get(home_title, "")
+        missing_substrings = [s for s in metric_group if s not in entry_text]
+        if missing_substrings:
+            problems.append(
+                f'fixed metric(s) {missing_substrings} must appear verbatim in the '
+                f'bullets of entry "{home_title}"'
+            )
+    return problems
+
+
+def validate_candidate(module, candidate: TailoredResume) -> List[str]:
+    problems = check_structure(module, candidate)
+    if problems:
+        return problems  # counts/titles wrong — the scans below assume structure holds
+    problems += check_em_dashes(candidate)
+    problems += check_fixed_metrics(module, candidate)
+    problems += check_layout_fit(module, candidate)
+    return problems
+
+
+def generate_tailored_candidate(
+    tailor_provider,
+    template_manager: TemplateManager,
+    gap: GapAnalysis,
+    current_content: TailoredResume,
+    skills_bank: str,
+    reflow_module,
+) -> Optional[TailoredResume]:
+    retry_feedback = None
+    for attempt in range(1, MAX_VALIDATION_RETRIES + 2):  # 1 try + 3 retries
+        system_message = template_manager.render_template("resume_reflow_system_message")
+        user_message = template_manager.render_template(
+            "resume_reflow_user_message",
+            job_title=gap.job_title,
+            missing_required_skills=gap.missing_required_skills,
+            missing_preferred_skills=gap.missing_preferred_skills,
+            improvement_areas=gap.improvement_areas,
+            summary=current_content.summary,
+            skills=current_content.skills,
+            experience=current_content.experience,
+            projects=current_content.projects,
+            skills_bank=skills_bank,
+            retry_feedback=retry_feedback,
+        )
+        if system_message is None or user_message is None:
+            sys.exit("Error: failed to render the resume reflow templates.")
+
+        response = tailor_provider.chat(
+            model=TAILOR_MODEL,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message},
+            ],
+        )
+
+        try:
+            response_text = extract_json_from_response(response["message"]["content"])
+            candidate = TailoredResume(**json.loads(response_text))
+        except Exception as parse_error:
+            logger.warning(f"Tailor attempt {attempt}: unparseable response ({parse_error})")
+            retry_feedback = (
+                "Your previous reply was not valid JSON matching the required "
+                f"structure: {parse_error}. Return ONLY the JSON object."
+            )
+            continue
+
+        problems = validate_candidate(reflow_module, candidate)
+        if not problems:
+            return candidate
+
+        logger.warning(f"Tailor attempt {attempt}: {len(problems)} guardrail problem(s)")
+        retry_feedback = "; ".join(problems)
+
+    logger.warning("Discarding this iteration's candidate: guardrails still failing after retries.")
+    return None
