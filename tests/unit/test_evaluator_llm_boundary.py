@@ -1,8 +1,8 @@
 """Unit tests that exercise the real LLM-call boundary in evaluator.py
-(extract_job_requirements, check_requirements, _score_resume, generate
-score summary, and the legacy ResumeEvaluator.evaluate_resume) via a mocked
-provider.chat(), rather than mocking the methods themselves. This gives
-much more real coverage of how a resume is actually graded.
+(extract_job_requirements, _score_resume, generate score summary, and the
+legacy ResumeEvaluator.evaluate_resume) via a mocked provider.chat(),
+rather than mocking the methods themselves. This gives much more real
+coverage of how a resume is actually graded.
 """
 
 import json
@@ -58,45 +58,6 @@ def test_extract_job_requirements_parses_llm_response():
 
     assert job_data.job_title == "Backend Engineer"
     assert job_data.required_skills == ["Python", "SQL"]
-
-
-def test_check_requirements_gates_on_missing_required_skill():
-    job_data_payload = {
-        "job_title": "Backend Engineer",
-        "required_skills": ["Python", "Kubernetes"],
-        "preferred_skills": [],
-        "must_have_qualifications": [],
-    }
-    evaluator = JobDescriptionEvaluator(
-        job_description="We need a backend engineer skilled in Python and Kubernetes.",
-        model_name="gemini-2.5-flash",
-        weight_profile="engineering",
-    )
-    recheck_payload = {
-        "verdicts": [
-            {
-                "requirement": "Kubernetes",
-                "status": "not_met",
-                "reasoning": "no mention",
-            }
-        ]
-    }
-    evaluator.provider = _DispatchingProvider(
-        {
-            "JobDescriptionData": job_data_payload,
-            "RequirementRecheckResponse": recheck_payload,
-        }
-    )
-
-    gate_result = evaluator.check_requirements(
-        "Backend engineer experienced in Python.",
-        resume_data=None,
-        knockout_resolver=None,
-    )
-
-    assert gate_result.passed is False
-    assert gate_result.missing_required_skills == ["Kubernetes"]
-    assert gate_result.kept_required_skills == ["Python"]
 
 
 def test_evaluate_full_flow_with_dispatched_llm_responses(monkeypatch):

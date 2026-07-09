@@ -1,11 +1,7 @@
 """Unit tests for deterministic keyword matching against job requirements."""
 
-from keyword_matching import (
-    apply_knockout_resolutions,
-    apply_llm_recheck,
-    compute_keyword_match,
-)
-from models import JobDescriptionData, MustHaveStatus, RequirementVerdict
+from keyword_matching import apply_knockout_resolutions, compute_keyword_match
+from models import JobDescriptionData
 
 
 def _job_data(**overrides) -> JobDescriptionData:
@@ -74,22 +70,3 @@ def test_apply_knockout_resolutions_marks_knockout_failed_on_rejection():
     assert resolved.knockout_failed is True
     assert resolved.gated is True
     assert resolved.coverage_score <= 60.0
-
-
-def test_apply_llm_recheck_moves_skill_from_missing_to_matched():
-    result = compute_keyword_match(
-        _job_data(required_skills=["Kubernetes"], preferred_skills=[]),
-        "Deployed and orchestrated containers at scale using k8s clusters.",
-    )
-    assert result.missing_required == ["Kubernetes"]
-
-    verdicts = {
-        "Kubernetes": RequirementVerdict(
-            requirement="Kubernetes", status="met", reasoning="k8s is Kubernetes"
-        )
-    }
-    rechecked = apply_llm_recheck(result, verdicts)
-
-    assert rechecked.missing_required == []
-    assert rechecked.matched_required == ["Kubernetes"]
-    assert rechecked.coverage_score == 100.0

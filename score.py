@@ -8,7 +8,6 @@ from github import fetch_and_display_github_info
 from models import (
     JSONResume,
     JobEvaluationData,
-    RequirementGateResult,
     ModelProvider,
     get_gemini_daily_spend_line,
 )
@@ -255,29 +254,6 @@ def build_job_evaluation_markdown(
     return "\n".join(lines)
 
 
-def build_flagged_report_markdown(
-    gate_result: RequirementGateResult, candidate_name: str = "Candidate"
-) -> str:
-    lines = [f"# Requirement Gate: {candidate_name}"]
-    lines.append(f"**Target Role:** {gate_result.job_title}")
-    lines.append("\n**Status:** FLAGGED — does not meet hard requirements")
-
-    lines.append("\n## Features Kept")
-    kept = gate_result.kept_required_skills + gate_result.kept_must_haves
-    if kept:
-        for item in kept:
-            lines.append(f"- {item}")
-    else:
-        lines.append("- None")
-
-    lines.append("\n## Features to Add")
-    missing = gate_result.missing_required_skills + gate_result.missing_must_haves
-    for item in missing:
-        lines.append(f"- {item}")
-
-    return "\n".join(lines)
-
-
 def write_result_markdown(markdown: str) -> None:
     Path(RESULT_FILE_PATH).write_text(markdown, encoding="utf-8")
     print(f"Report written to {RESULT_FILE_PATH}")
@@ -398,14 +374,6 @@ def main():
         model_params=model_params,
         weight_profile=weight_profile,
     )
-    gate_resume_text = convert_json_resume_to_text(resume_data)
-    gate_result = job_evaluator.check_requirements(
-        gate_resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
-    )
-    if not gate_result.passed:
-        markdown = build_flagged_report_markdown(gate_result, candidate_name)
-        write_result_markdown(markdown)
-        return gate_result
 
     github_data = {}
     github_cache_loaded = False

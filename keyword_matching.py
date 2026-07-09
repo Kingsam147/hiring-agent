@@ -6,7 +6,7 @@ dependencies beyond the standard library.
 
 import re
 import unicodedata
-from typing import Callable, Dict, List, Optional
+from typing import Callable, List, Optional
 
 from models import (
     JSONResume,
@@ -14,7 +14,6 @@ from models import (
     KeywordMatchResult,
     MustHaveStatus,
     IndustryMatch,
-    RequirementVerdict,
 )
 
 MUST_HAVE_VERIFIABLE_MAX_WORDS = 5
@@ -230,61 +229,6 @@ def apply_knockout_resolutions(
             "gated": gated,
             "coverage_score": round(coverage_score, 1),
             "knockout_failed": knockout_failed,
-        }
-    )
-
-
-def apply_llm_recheck(
-    result: KeywordMatchResult, verdicts: Dict[str, RequirementVerdict]
-) -> KeywordMatchResult:
-    if not verdicts:
-        return result
-
-    matched_required = list(result.matched_required)
-    missing_required = []
-    for skill in result.missing_required:
-        verdict = verdicts.get(skill)
-        if verdict is not None and verdict.status == "met":
-            matched_required.append(skill)
-        else:
-            missing_required.append(skill)
-
-    updated_status = []
-    for status in result.must_have_status:
-        verdict = verdicts.get(status.qualification)
-        if verdict is None or status.status == "found" or status.resolved is not None:
-            updated_status.append(status)
-            continue
-        if verdict.status == "met":
-            updated_status.append(status.model_copy(update={"resolved": True}))
-        elif verdict.status == "not_met":
-            updated_status.append(status.model_copy(update={"resolved": False}))
-        else:
-            updated_status.append(status)
-
-    required_total = len(matched_required) + len(missing_required)
-    preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
-    coverage = _weighted_coverage(
-        len(matched_required),
-        required_total,
-        len(result.matched_preferred),
-        preferred_total,
-    )
-
-    gated = any(
-        status.status != "found" and status.resolved is not True
-        for status in updated_status
-    )
-    if gated:
-        coverage = min(coverage, GATE_CAP)
-
-    return result.model_copy(
-        update={
-            "matched_required": matched_required,
-            "missing_required": missing_required,
-            "must_have_status": updated_status,
-            "coverage_score": round(coverage, 1),
-            "gated": gated,
         }
     )
 

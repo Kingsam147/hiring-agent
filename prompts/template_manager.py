@@ -49,8 +49,6 @@ class TemplateManager:
             "job_evaluation_criteria": "job_evaluation_criteria.jinja",
             "job_evaluation_system_message": "job_evaluation_system_message.jinja",
             "why_this_score": "why_this_score.jinja",
-            "requirement_recheck": "requirement_recheck.jinja",
-            "requirement_recheck_system_message": "requirement_recheck_system_message.jinja",
             "resume_reflow_system_message": "resume_reflow_system_message.jinja",
             "resume_reflow_user_message": "resume_reflow_user_message.jinja",
         }

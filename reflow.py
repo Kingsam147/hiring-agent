@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel
 
 from evaluator import JobDescriptionEvaluator
+from keyword_matching import apply_knockout_resolutions, compute_keyword_match
 from llm_utils import initialize_llm_provider, extract_json_from_response
 from models import JSONResume, Skill
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, CLAUDE_API_KEY
@@ -44,13 +45,11 @@ MAX_STAGNANT_ITERATIONS = 2
 MAX_VALIDATION_RETRIES = 3
 
 FULL_REPORT_HEADER = "# Job Match Evaluation:"
-FLAGGED_REPORT_HEADER = "# Requirement Gate:"
 TARGET_ROLE_PREFIX = "**Target Role:** "
 WEIGHT_PROFILE_PREFIX = "**Weight profile:** "
 REQUIRED_MISSING_HEADER = "**Required skills MISSING:**"
 PREFERRED_MISSING_HEADER = "**Preferred skills missing:**"
 IMPROVEMENT_SECTION_HEADER = "## Areas for Improvement"
-FEATURES_TO_ADD_HEADER = "## Features to Add"
 
 
 class GapAnalysis(BaseModel):
@@ -120,19 +119,10 @@ def parse_result_markdown(result_path: str = RESULT_FILE_PATH) -> GapAnalysis:
             improvement_areas=_bullets_under_section(lines, IMPROVEMENT_SECTION_HEADER),
         )
 
-    if first_line.startswith(FLAGGED_REPORT_HEADER):
-        job_title = _line_value_with_prefix(lines, TARGET_ROLE_PREFIX)
-        return GapAnalysis(
-            job_title=job_title or "Unknown role",
-            missing_required_skills=_bullets_under_section(
-                lines, FEATURES_TO_ADD_HEADER
-            ),
-        )
-
     sys.exit(
         f"Error: '{result_path}' does not look like a job-match report "
-        f"(expected it to start with '{FULL_REPORT_HEADER}' or "
-        f"'{FLAGGED_REPORT_HEADER}'). Re-run 'python score.py' to regenerate it."
+        f"(expected it to start with '{FULL_REPORT_HEADER}'). "
+        "Re-run 'python score.py' to regenerate it."
     )
 
 
@@ -561,11 +551,11 @@ def build_frozen_resolver(
         model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
         weight_profile=weight_profile,
     )
-    setup_evaluator.check_requirements(
-        original_resume_text,
-        resume_data=original_resume,
-        knockout_resolver=capturing_resolver,
+    job_data = setup_evaluator.extract_job_requirements()
+    keyword_result = compute_keyword_match(
+        job_data, original_resume_text, original_resume
     )
+    apply_knockout_resolutions(keyword_result, capturing_resolver)
 
     def frozen_resolver(qualification: str) -> Optional[bool]:
         return captured_answers.get(qualification)
@@ -585,9 +575,6 @@ def regrade_candidate(
         model_name=DEFAULT_MODEL,
         model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
         weight_profile=weight_profile,
-    )
-    fresh_evaluator.check_requirements(
-        resume_text, resume_data=tailored_resume, knockout_resolver=frozen_resolver
     )
     evaluation = fresh_evaluator.evaluate(
         resume_text, resume_data=tailored_resume, knockout_resolver=frozen_resolver
