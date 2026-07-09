@@ -111,7 +111,7 @@ def test_evaluate_orchestration_with_mocked_llm_and_embeddings(monkeypatch):
     monkeypatch.setattr(evaluator, "compute_semantic_score", lambda resume_text: 55.0)
 
     resume_text = "Backend engineer with 3 years of Python and SQL experience."
-    result = evaluator.evaluate(resume_text, resume_data=None, knockout_resolver=None)
+    result = evaluator.evaluate(resume_text, resume_data=None)
 
     assert result.job_title == "Backend Engineer"
     # Weighted coverage: both required skills matched (2/2) but the one

@@ -11,7 +11,6 @@ from models import (
     ModelProvider,
     get_gemini_daily_spend_line,
 )
-from typing import Optional
 from evaluator import JobDescriptionEvaluator
 from pathlib import Path
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, MODEL_PROVIDER_MAPPING
@@ -86,8 +85,6 @@ def build_job_evaluation_markdown(
     lines.append(f"**Target Role:** {evaluation.job_title}")
 
     lines.append(f"\n**Overall Match:** {evaluation.weighted_total}/100")
-    if evaluation.keyword_match and evaluation.keyword_match.knockout_failed:
-        lines.append("> CAPPED at 30 — reviewer confirmed a must-have is not met")
     lines.append(f"**Weight profile:** {evaluation.weight_profile}")
 
     if evaluation.score_summary:
@@ -194,13 +191,9 @@ def build_job_evaluation_markdown(
                 "unverifiable": "could not be verified by keyword matching",
             }
             for status in keyword_match.must_have_status:
-                if status.resolved is True:
-                    label = "confirmed met"
-                elif status.resolved is False:
-                    label = "REJECTED (knockout)"
-                else:
-                    label = status_labels[status.status]
-                lines.append(f"- {status.qualification}: {label}")
+                lines.append(
+                    f"- {status.qualification}: {status_labels[status.status]}"
+                )
 
         if keyword_match.skill_experience:
             lines.append("\n**Skill tenure (deterministic, from work-history dates):**")
@@ -257,19 +250,6 @@ def build_job_evaluation_markdown(
 def write_result_markdown(markdown: str) -> None:
     Path(RESULT_FILE_PATH).write_text(markdown, encoding="utf-8")
     print(f"Report written to {RESULT_FILE_PATH}")
-
-
-def _knockout_resolver(qualification: str) -> Optional[bool]:
-    print(f'\nMust-have could not be auto-verified: "{qualification}"')
-    while True:
-        answer = input("Does the candidate meet it? [y/n/s=skip]: ").strip().lower()
-        if answer == "y":
-            return True
-        if answer == "n":
-            return False
-        if answer in ("s", ""):
-            return None
-        print("Invalid choice. Please enter y, n, or s.")
 
 
 def is_valid_resume_data(resume_data: JSONResume) -> bool:
@@ -434,9 +414,7 @@ def main():
     if github_data:
         resume_text += convert_github_data_to_text(github_data)
 
-    job_evaluation = job_evaluator.evaluate(
-        resume_text, resume_data=resume_data, knockout_resolver=_knockout_resolver
-    )
+    job_evaluation = job_evaluator.evaluate(resume_text, resume_data=resume_data)
     write_result_markdown(build_job_evaluation_markdown(job_evaluation, candidate_name))
 
     if DEVELOPMENT_MODE:

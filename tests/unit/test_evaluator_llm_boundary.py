@@ -99,7 +99,6 @@ def test_evaluate_full_flow_with_dispatched_llm_responses(monkeypatch):
     result = evaluator.evaluate(
         "Backend engineer with 3 years of Python and SQL experience.",
         resume_data=None,
-        knockout_resolver=None,
     )
 
     assert result.job_title == "Backend Engineer"

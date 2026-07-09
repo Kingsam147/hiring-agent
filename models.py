@@ -327,7 +327,6 @@ class IndustryMatch(BaseModel):
 class MustHaveStatus(BaseModel):
     qualification: str
     status: Literal["found", "not_found", "unverifiable"]
-    resolved: Optional[bool] = None
 
 
 class SkillExperience(BaseModel):
@@ -344,7 +343,6 @@ class KeywordMatchResult(BaseModel):
     must_have_status: List[MustHaveStatus] = []
     coverage_score: float = Field(ge=0, le=100)
     gated: bool = False
-    knockout_failed: bool = False
     skill_experience: Optional[List[SkillExperience]] = None
     estimated_total_years: Optional[float] = None
 

@@ -1,6 +1,6 @@
 """Unit tests for deterministic keyword matching against job requirements."""
 
-from keyword_matching import apply_knockout_resolutions, compute_keyword_match
+from keyword_matching import compute_keyword_match
 from models import JobDescriptionData
 
 
@@ -40,7 +40,7 @@ def test_keyword_match_gates_coverage_when_must_have_missing():
     assert result.must_have_status[0].status == "not_found"
 
 
-def test_apply_knockout_resolutions_resolves_unverifiable_must_have():
+def test_keyword_match_leaves_long_qualifications_unverifiable_and_uncapped():
     job_data = _job_data(
         must_have_qualifications=[
             "Willingness to work in a fast paced, high pressure environment"
@@ -49,24 +49,8 @@ def test_apply_knockout_resolutions_resolves_unverifiable_must_have():
     resume_text = (
         "Backend engineer experienced in Python, SQL, Kubernetes, React, and Docker."
     )
+
     result = compute_keyword_match(job_data, resume_text)
+
     assert result.must_have_status[0].status == "unverifiable"
-
-    resolved = apply_knockout_resolutions(result, resolver=lambda qualification: True)
-
-    assert resolved.must_have_status[0].resolved is True
-    assert resolved.knockout_failed is False
-    assert resolved.gated is False
-
-
-def test_apply_knockout_resolutions_marks_knockout_failed_on_rejection():
-    result = compute_keyword_match(
-        _job_data(must_have_qualifications=["Security clearance"]),
-        "Backend engineer experienced in Python, SQL, Kubernetes.",
-    )
-
-    resolved = apply_knockout_resolutions(result, resolver=lambda qualification: False)
-
-    assert resolved.knockout_failed is True
-    assert resolved.gated is True
-    assert resolved.coverage_score <= 60.0
+    assert result.gated is False

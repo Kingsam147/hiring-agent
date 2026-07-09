@@ -6,7 +6,7 @@ dependencies beyond the standard library.
 
 import re
 import unicodedata
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from models import (
     JSONResume,
@@ -18,7 +18,6 @@ from models import (
 
 MUST_HAVE_VERIFIABLE_MAX_WORDS = 5
 GATE_CAP = 60.0
-KNOCKOUT_CAP = 30.0
 REQUIRED_WEIGHT = 0.8
 PREFERRED_WEIGHT = 0.2
 
@@ -174,62 +173,6 @@ def compute_keyword_match(
         gated=gated,
         skill_experience=compute_skill_experience(required_skills, work),
         estimated_total_years=compute_total_experience_years(work),
-    )
-
-
-def apply_knockout_resolutions(
-    result: KeywordMatchResult, resolver: Optional[Callable[[str], Optional[bool]]]
-) -> KeywordMatchResult:
-    if resolver is None:
-        return result
-
-    updated_status = []
-    knockout_failed = False
-    for status in result.must_have_status:
-        if status.status == "found" or status.resolved is not None:
-            updated_status.append(status)
-            if status.resolved is False:
-                knockout_failed = True
-            continue
-
-        answer = resolver(status.qualification)
-        if answer is None:
-            updated_status.append(status)
-            continue
-
-        updated_status.append(
-            MustHaveStatus(
-                qualification=status.qualification,
-                status=status.status,
-                resolved=answer,
-            )
-        )
-        if answer is False:
-            knockout_failed = True
-
-    required_total = len(result.matched_required) + len(result.missing_required)
-    preferred_total = len(result.matched_preferred) + len(result.missing_preferred)
-    coverage_score = _weighted_coverage(
-        len(result.matched_required),
-        required_total,
-        len(result.matched_preferred),
-        preferred_total,
-    )
-
-    gated = any(
-        status.status != "found" and status.resolved is not True
-        for status in updated_status
-    )
-    if gated:
-        coverage_score = min(coverage_score, GATE_CAP)
-
-    return result.model_copy(
-        update={
-            "must_have_status": updated_status,
-            "gated": gated,
-            "coverage_score": round(coverage_score, 1),
-            "knockout_failed": knockout_failed,
-        }
     )
 
 

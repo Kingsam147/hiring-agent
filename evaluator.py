@@ -1,4 +1,4 @@
-from typing import Optional, Type, Callable
+from typing import Optional, Type
 from pydantic import BaseModel
 from models import (
     JSONResume,
@@ -17,8 +17,6 @@ from keyword_matching import (
     compute_keyword_match,
     build_skills_evidence,
     compute_industry_mentions,
-    apply_knockout_resolutions,
-    KNOCKOUT_CAP,
 )
 from seniority import assess_seniority
 from weight_profiles import get_profile, DEFAULT_PROFILE
@@ -367,7 +365,6 @@ class JobDescriptionEvaluator:
         self,
         resume_text: str,
         resume_data: Optional[JSONResume] = None,
-        knockout_resolver: Optional[Callable[[str], Optional[bool]]] = None,
     ) -> JobEvaluationData:
         logger.info("Extracting requirements from job description...")
         job_data = self.extract_job_requirements()
@@ -377,16 +374,11 @@ class JobDescriptionEvaluator:
 
         logger.info("Computing deterministic keyword match...")
         keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
-        keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
 
         logger.info(
             f"Keyword coverage: {keyword_result.coverage_score} | "
             f"Missing required: {keyword_result.missing_required}"
         )
-        if keyword_result.knockout_failed:
-            logger.info(
-                "A must-have qualification was rejected by the reviewer — capping score."
-            )
 
         if self.embedding_model is None:
             self._load_embedding_model()
@@ -423,8 +415,6 @@ class JobDescriptionEvaluator:
         )
 
         weighted_total = self._compute_weighted_total(scores, semantic_score)
-        if keyword_result.knockout_failed:
-            weighted_total = min(weighted_total, KNOCKOUT_CAP)
 
         result = JobEvaluationData(
             scores=scores,

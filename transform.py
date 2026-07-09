@@ -581,14 +581,8 @@ def transform_job_evaluation_response(
             )
             csv_row["must_have_qualifications_status"] = "; ".join(
                 f"{status.qualification}: {status.status}"
-                + (
-                    f" (reviewer: {'yes' if status.resolved else 'no'})"
-                    if status.resolved is not None
-                    else ""
-                )
                 for status in keyword_match.must_have_status
             )
-            csv_row["knockout_failed"] = str(keyword_match.knockout_failed)
             csv_row["skill_years"] = (
                 "; ".join(
                     f"{s.skill}: {s.years}" for s in keyword_match.skill_experience
@@ -610,7 +604,6 @@ def transform_job_evaluation_response(
                 "matched_preferred_skills",
                 "missing_preferred_skills",
                 "must_have_qualifications_status",
-                "knockout_failed",
                 "skill_years",
                 "estimated_total_years",
             ]:
@@ -658,7 +651,6 @@ def transform_job_evaluation_response(
             "matched_preferred_skills",
             "missing_preferred_skills",
             "must_have_qualifications_status",
-            "knockout_failed",
             "skill_years",
             "estimated_total_years",
         ]:

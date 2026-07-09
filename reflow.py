@@ -20,17 +20,11 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel
 
 from evaluator import JobDescriptionEvaluator
-from keyword_matching import apply_knockout_resolutions, compute_keyword_match
 from llm_utils import initialize_llm_provider, extract_json_from_response
 from models import JSONResume, Skill
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, CLAUDE_API_KEY
 from prompts.template_manager import TemplateManager
-from score import (
-    RESULT_FILE_PATH,
-    find_resume_file,
-    load_job_description,
-    _knockout_resolver,
-)
+from score import RESULT_FILE_PATH, find_resume_file, load_job_description
 from transform import convert_json_resume_to_text
 
 logger = logging.getLogger(__name__)
@@ -531,43 +525,10 @@ def apply_candidate_to_resume(
     return tailored_resume
 
 
-def build_frozen_resolver(
-    job_description: str,
-    weight_profile: str,
-    original_resume_text: str,
-    original_resume: JSONResume,
-):
-    """Ask the user about unresolved must-haves exactly once, up front."""
-    captured_answers: Dict[str, Optional[bool]] = {}
-
-    def capturing_resolver(qualification: str) -> Optional[bool]:
-        answer = _knockout_resolver(qualification)
-        captured_answers[qualification] = answer
-        return answer
-
-    setup_evaluator = JobDescriptionEvaluator(
-        job_description=job_description,
-        model_name=DEFAULT_MODEL,
-        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
-        weight_profile=weight_profile,
-    )
-    job_data = setup_evaluator.extract_job_requirements()
-    keyword_result = compute_keyword_match(
-        job_data, original_resume_text, original_resume
-    )
-    apply_knockout_resolutions(keyword_result, capturing_resolver)
-
-    def frozen_resolver(qualification: str) -> Optional[bool]:
-        return captured_answers.get(qualification)
-
-    return frozen_resolver
-
-
 def regrade_candidate(
     job_description: str,
     weight_profile: str,
     tailored_resume: JSONResume,
-    frozen_resolver,
 ) -> float:
     resume_text = convert_json_resume_to_text(tailored_resume)
     fresh_evaluator = JobDescriptionEvaluator(
@@ -576,9 +537,7 @@ def regrade_candidate(
         model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
         weight_profile=weight_profile,
     )
-    evaluation = fresh_evaluator.evaluate(
-        resume_text, resume_data=tailored_resume, knockout_resolver=frozen_resolver
-    )
+    evaluation = fresh_evaluator.evaluate(resume_text, resume_data=tailored_resume)
     return evaluation.weighted_total
 
 
@@ -590,7 +549,6 @@ def run_reflow_loop(
     reflow_module,
     skills_bank: str,
     job_description: str,
-    frozen_resolver,
 ) -> Tuple[Optional[TailoredResume], float, List[float]]:
     best_candidate: Optional[TailoredResume] = None
     best_score = float("-inf")
@@ -623,7 +581,7 @@ def run_reflow_loop(
 
         tailored_resume = apply_candidate_to_resume(original_resume, candidate)
         iteration_score = regrade_candidate(
-            job_description, gap.weight_profile, tailored_resume, frozen_resolver
+            job_description, gap.weight_profile, tailored_resume
         )
         score_history.append(iteration_score)
         print(f"Iteration {iteration} weighted total: {iteration_score}/100")
@@ -743,15 +701,6 @@ def main():
             "content already in the resume."
         )
 
-    original_resume_text = convert_json_resume_to_text(original_resume)
-    print(
-        "\nResolving must-have qualifications once, up front (answers are "
-        "frozen for every regrade in the loop):"
-    )
-    frozen_resolver = build_frozen_resolver(
-        job_description, gap.weight_profile, original_resume_text, original_resume
-    )
-
     tailor_provider = initialize_llm_provider(TAILOR_MODEL)
     template_manager = TemplateManager()
 
@@ -763,7 +712,6 @@ def main():
         reflow_module,
         skills_bank,
         job_description,
-        frozen_resolver,
     )
 
     print("\n" + "=" * 60)

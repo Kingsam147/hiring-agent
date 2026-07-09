@@ -74,7 +74,6 @@ def test_reflow_loop_tracks_best_score_and_stops_on_plateau(
         fake_reflow_module,
         skills_bank="",
         job_description="Backend engineer role requiring Kubernetes.",
-        frozen_resolver=lambda qualification: None,
     )
 
     assert score_history == [70.0, 75.0, 78.0, 77.0, 76.0]
@@ -104,7 +103,6 @@ def test_reflow_loop_reports_not_compatible_when_score_plateaus_below_seventy(
         fake_reflow_module,
         skills_bank="",
         job_description="Backend engineer role requiring Kubernetes.",
-        frozen_resolver=lambda qualification: None,
     )
 
     assert best_score == 40.0
