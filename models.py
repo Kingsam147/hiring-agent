@@ -272,6 +272,7 @@ class JobDescriptionData(BaseModel):
     job_title: str
     required_skills: List[str]
     preferred_skills: List[str] = []
+    soft_skills: List[str] = []
     years_of_experience: Optional[float] = None
     education_requirements: Optional[str] = None
     must_have_qualifications: List[str] = []
@@ -340,6 +341,8 @@ class KeywordMatchResult(BaseModel):
     missing_required: List[str] = []
     matched_preferred: List[str] = []
     missing_preferred: List[str] = []
+    matched_soft_skills: List[str] = []
+    missing_soft_skills: List[str] = []
     must_have_status: List[MustHaveStatus] = []
     coverage_score: float = Field(ge=0, le=100)
     gated: bool = False

@@ -91,3 +91,94 @@ def test_apply_candidate_rebuilds_skills_from_tailored_pairs():
     # Original object must not be mutated.
     assert original_resume.skills[0].keywords == ["Python"]
     assert original_resume.work[0].highlights == ["Old bullet."]
+
+
+def test_load_potential_skills_returns_empty_when_section_missing(
+    monkeypatch, tmp_path
+):
+    skeleton = tmp_path / "skills_bank.txt"
+    skeleton.write_text("[Languages]\nGo\n", encoding="utf-8")
+    monkeypatch.setattr(reflow, "SKILLS_BANK_PATH", skeleton)
+
+    assert reflow.load_potential_skills() == []
+
+
+def test_load_potential_skills_returns_lines_from_section(monkeypatch, tmp_path):
+    filled = tmp_path / "skills_bank.txt"
+    filled.write_text(
+        "[Languages]\nGo\n\n[Potential Skills]\n"
+        "# comment should be skipped\n"
+        "Kubernetes (used briefly, needs a refresher)\n"
+        "GraphQL\n\n[Projects]\n### Example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reflow, "SKILLS_BANK_PATH", filled)
+
+    assert reflow.load_potential_skills() == [
+        "Kubernetes (used briefly, needs a refresher)",
+        "GraphQL",
+    ]
+
+
+def _candidate_with_text(summary: str, bullet: str) -> TailoredResume:
+    return TailoredResume(
+        summary=summary,
+        skills=[TailoredSkill(label="Languages: ", rest="Python, Go")],
+        experience=[TailoredEntry(title="Acme | Engineer", bullets=[bullet])],
+        projects=[],
+    )
+
+
+def test_find_used_potential_skills_matches_core_name_case_insensitively():
+    potential_skills = ["Kubernetes (used briefly, needs a refresher)"]
+    candidate = _candidate_with_text(
+        "Backend engineer.", "Deployed services with kubernetes at scale."
+    )
+
+    used = reflow.find_used_potential_skills(potential_skills, candidate)
+
+    assert used == ["Kubernetes (used briefly, needs a refresher)"]
+
+
+def test_find_used_potential_skills_ignores_skills_not_present():
+    potential_skills = ["Kubernetes (used briefly, needs a refresher)", "GraphQL"]
+    candidate = _candidate_with_text(
+        "Backend engineer.", "Built REST APIs with Node.js."
+    )
+
+    used = reflow.find_used_potential_skills(potential_skills, candidate)
+
+    assert used == []
+
+
+def test_load_potential_skills_parses_markdown_header_bullet_list(
+    monkeypatch, tmp_path
+):
+    filled = tmp_path / "skills_bank.txt"
+    filled.write_text(
+        "## Verified Skills\n\n### Languages\nPython\n\n---\n\n"
+        "## Potential Skills\n\n"
+        "- C# (Crestron XiO Cloud co-op)\n"
+        "- ASP.NET Core (Crestron XiO Cloud co-op)\n\n"
+        "---\n\n# Job Search Context\nSome notes.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reflow, "SKILLS_BANK_PATH", filled)
+
+    assert reflow.load_potential_skills() == [
+        "C# (Crestron XiO Cloud co-op)",
+        "ASP.NET Core (Crestron XiO Cloud co-op)",
+    ]
+
+
+def test_load_potential_skills_markdown_section_stops_at_next_header_without_rule(
+    monkeypatch, tmp_path
+):
+    filled = tmp_path / "skills_bank.txt"
+    filled.write_text(
+        "## Potential Skills\n\n- Kubernetes\n\n## Projects\n- Should not appear\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reflow, "SKILLS_BANK_PATH", filled)
+
+    assert reflow.load_potential_skills() == ["Kubernetes"]

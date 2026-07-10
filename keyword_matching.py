@@ -27,6 +27,79 @@ _PUNCTUATION_TO_STRIP = re.compile(r"[,;:()\[\]{}'\"!?]")
 _SEPARATORS_TO_SPACE = re.compile(r"[-_/]")
 _WHITESPACE_RUN = re.compile(r"\s+")
 
+_PARENTHETICAL_ALTERNATIVES = re.compile(r"^(.*?)\(([^)]+)\)\s*$")
+_BARE_OR_SPLIT = re.compile(r"\s+or\s+", re.IGNORECASE)
+
+# Bounded, hand-maintained aliases for abbreviations we've actually seen a
+# grading model fail to connect to their spelled-out requirement phrase.
+# Kept short and specific per skill-bank category to avoid over-matching --
+# each alias should be an unambiguous short form of its key, not a loose
+# synonym that could be true of a different, unrelated skill.
+_REQUIREMENT_ALIASES = {
+    "object oriented programming": ["oop"],
+    "data structures and algorithms": ["data structures & algorithms", "dsa", "ds&a"],
+    ".net platform": [
+        "asp.net core",
+        "asp.net",
+        ".net core",
+        ".net framework",
+        "dotnet",
+        "c#",
+    ],
+    # Languages
+    "javascript": ["js"],
+    "typescript": ["ts"],
+    # Backend
+    "restful api development": ["rest api", "rest apis", "restful api", "rest"],
+    "asynchronous programming": ["async", "async/await"],
+    "client server application architecture": ["client-server", "client server"],
+    "node.js": ["node", "nodejs"],
+    # Cloud & DevOps
+    "amazon web services": ["aws"],
+    "google cloud platform": ["gcp"],
+    "continuous integration continuous deployment": ["ci/cd", "cicd"],
+    "cloud based applications": ["cloud-based", "cloud native"],
+    # Architecture & Security
+    "domain driven design": ["ddd"],
+    "role based access control": ["rbac"],
+    "row level security": ["rls"],
+    # Frontend
+    "single page application": ["spa"],
+    # Database & Querying
+    "structured query language": ["sql"],
+    "relational database management system": ["rdbms"],
+    # Development Practice
+    "test driven development": ["tdd"],
+    "full stack web development": ["full-stack", "full stack", "fullstack"],
+}
+
+_RELATIONAL_DB_ENGINES = [
+    "postgresql",
+    "postgres",
+    "mysql",
+    "sql server",
+    "oracle",
+    "sqlite",
+    "mariadb",
+]
+_NOSQL_DB_ENGINES = [
+    "mongodb",
+    "dynamodb",
+    "cassandra",
+    "couchdb",
+    "firestore",
+    "firebase",
+]
+
+# Bounded synonym table so a named database engine satisfies a generic
+# "relational"/"NoSQL database" alternative, without matching arbitrary text.
+_CATEGORY_ENGINE_SYNONYMS = {
+    "relational database": _RELATIONAL_DB_ENGINES,
+    "relational databases": _RELATIONAL_DB_ENGINES,
+    "nosql database": _NOSQL_DB_ENGINES,
+    "nosql databases": _NOSQL_DB_ENGINES,
+}
+
 
 def normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text).casefold()
@@ -75,6 +148,59 @@ def build_match_corpus(
                     parts.append(certificate.name)
 
     return normalize_text("\n".join(parts))
+
+
+def _requirement_alternatives(requirement: str) -> List[str]:
+    """Split a bundled requirement into individually-satisfying alternatives.
+
+    "SPA frameworks (Angular, React, or Vue)" -> ["SPA frameworks", "Angular",
+    "React", "Vue"]. "Relational or NoSQL databases" -> ["Relational
+    databases", "NoSQL databases"] (the trailing noun is shared across the
+    "or"). A requirement with no alternatives returns [requirement] as-is.
+    """
+    parens_match = _PARENTHETICAL_ALTERNATIVES.match(requirement)
+    if parens_match:
+        alternatives = []
+        outer = parens_match.group(1).strip()
+        if outer:
+            alternatives.append(outer)
+        for part in re.split(r",|\bor\b", parens_match.group(2), flags=re.IGNORECASE):
+            part = part.strip()
+            if part:
+                alternatives.append(part)
+        return alternatives
+
+    or_parts = [part.strip() for part in _BARE_OR_SPLIT.split(requirement)]
+    if len(or_parts) > 1:
+        last_words = or_parts[-1].split()
+        shared_suffix = " ".join(last_words[1:]) if len(last_words) > 1 else ""
+        alternatives = []
+        for part in or_parts:
+            if part == or_parts[-1] or not shared_suffix or " " in part:
+                alternatives.append(part)
+            else:
+                alternatives.append(f"{part} {shared_suffix}")
+        return alternatives
+
+    return [requirement]
+
+
+def requirement_satisfied(requirement: str, normalized_corpus: str) -> bool:
+    """Whether a required/preferred skill is satisfied, honoring OR-bundled
+    alternatives (parenthetical or bare "A or B" phrasing), common
+    abbreviations, and named database engines standing in for their category.
+    """
+    for alternative in _requirement_alternatives(requirement):
+        if keyword_found(alternative, normalized_corpus):
+            return True
+        normalized_alternative = normalize_text(alternative)
+        for alias in _REQUIREMENT_ALIASES.get(normalized_alternative, []):
+            if keyword_found(alias, normalized_corpus):
+                return True
+        for engine in _CATEGORY_ENGINE_SYNONYMS.get(normalized_alternative, []):
+            if keyword_found(engine, normalized_corpus):
+                return True
+    return False
 
 
 def _dedupe_keywords(keywords: List[str]) -> List[str]:
@@ -131,18 +257,31 @@ def compute_keyword_match(
 
     required_skills = _dedupe_keywords(job_data.required_skills or [])
     preferred_skills = _dedupe_keywords(job_data.preferred_skills or [])
+    soft_skills = _dedupe_keywords(job_data.soft_skills or [])
 
     matched_required = [
-        skill for skill in required_skills if keyword_found(skill, normalized_corpus)
+        skill
+        for skill in required_skills
+        if requirement_satisfied(skill, normalized_corpus)
     ]
     missing_required = [
         skill for skill in required_skills if skill not in matched_required
     ]
     matched_preferred = [
-        skill for skill in preferred_skills if keyword_found(skill, normalized_corpus)
+        skill
+        for skill in preferred_skills
+        if requirement_satisfied(skill, normalized_corpus)
     ]
     missing_preferred = [
         skill for skill in preferred_skills if skill not in matched_preferred
+    ]
+    matched_soft_skills = [
+        skill
+        for skill in soft_skills
+        if requirement_satisfied(skill, normalized_corpus)
+    ]
+    missing_soft_skills = [
+        skill for skill in soft_skills if skill not in matched_soft_skills
     ]
 
     must_have_status = [
@@ -168,6 +307,8 @@ def compute_keyword_match(
         missing_required=missing_required,
         matched_preferred=matched_preferred,
         missing_preferred=missing_preferred,
+        matched_soft_skills=matched_soft_skills,
+        missing_soft_skills=missing_soft_skills,
         must_have_status=must_have_status,
         coverage_score=round(coverage, 1),
         gated=gated,

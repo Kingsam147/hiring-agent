@@ -183,6 +183,20 @@ def build_job_evaluation_markdown(
                 else "None"
             )
 
+        if keyword_match.matched_soft_skills or keyword_match.missing_soft_skills:
+            lines.append("\n**Soft skills present:**")
+            lines.append(
+                ", ".join(keyword_match.matched_soft_skills)
+                if keyword_match.matched_soft_skills
+                else "None"
+            )
+            lines.append("\n**Soft skills missing:**")
+            lines.append(
+                ", ".join(keyword_match.missing_soft_skills)
+                if keyword_match.missing_soft_skills
+                else "None"
+            )
+
         if keyword_match.must_have_status:
             lines.append("\n**Must-have qualifications:**")
             status_labels = {

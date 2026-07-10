@@ -13,6 +13,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -21,10 +22,21 @@ from pydantic import BaseModel
 
 from evaluator import JobDescriptionEvaluator
 from llm_utils import initialize_llm_provider, extract_json_from_response
-from models import JSONResume, Skill
+from keyword_matching import (
+    compute_keyword_match,
+    normalize_text,
+    requirement_satisfied,
+)
+from models import JobDescriptionData, JobEvaluationData, JSONResume, Skill
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, CLAUDE_API_KEY
 from prompts.template_manager import TemplateManager
-from score import RESULT_FILE_PATH, find_resume_file, load_job_description
+from score import (
+    RESULT_FILE_PATH,
+    build_job_evaluation_markdown,
+    find_resume_file,
+    load_job_description,
+    write_result_markdown,
+)
 from transform import convert_json_resume_to_text
 
 logger = logging.getLogger(__name__)
@@ -133,15 +145,21 @@ def load_cached_resume() -> JSONResume:
     return JSONResume(**cached_data)
 
 
-def load_reflow_resume_module():
-    if not REFLOW_RESUME_PATH.exists():
-        sys.exit(f"Error: '{REFLOW_RESUME_PATH}' not found.")
-    module_spec = importlib.util.spec_from_file_location(
-        "reflow_resume", REFLOW_RESUME_PATH
-    )
+def load_reflow_resume_module(path: Optional[Path] = None):
+    path = path if path is not None else REFLOW_RESUME_PATH
+    if not path.exists():
+        sys.exit(f"Error: '{path}' not found.")
+    module_spec = importlib.util.spec_from_file_location("reflow_resume", path)
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
     return module
+
+
+def render_tailored_resume() -> Path:
+    tailored_module = load_reflow_resume_module(TAILORED_RESUME_PATH)
+    output_path = TAILORED_RESUME_PATH.with_suffix(".pdf")
+    tailored_module.build(str(output_path))
+    return output_path
 
 
 def load_skills_bank() -> str:
@@ -154,6 +172,70 @@ def load_skills_bank() -> str:
         if line.strip() and not line.strip().startswith(("#", "["))
     ]
     return content if meaningful_lines else ""
+
+
+_MARKDOWN_HEADER_PATTERN = re.compile(r"^#{1,6}\s+(.*)$")
+_HORIZONTAL_RULE_PATTERN = re.compile(r"^-{3,}$")
+
+
+def _skills_bank_section(content: str, header: str) -> List[str]:
+    """Extract one section's entries from skills_bank.txt.
+
+    Supports both the bracket style ("[Header]", entries stop at the next
+    "[...]") and Markdown style ("## Header", "- entry", stops at the next
+    "#"-header of any level or a "---" rule) so the file can be freely
+    reorganized without breaking Potential Skills detection.
+    """
+    items = []
+    in_section = False
+    section_style = None
+
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        if not in_section:
+            if stripped == f"[{header}]":
+                in_section = True
+                section_style = "bracket"
+            else:
+                markdown_match = _MARKDOWN_HEADER_PATTERN.match(stripped)
+                if markdown_match and markdown_match.group(1).strip() == header:
+                    in_section = True
+                    section_style = "markdown"
+            continue
+
+        if section_style == "bracket":
+            if stripped.startswith("[") and stripped.endswith("]"):
+                break
+            if not stripped or stripped.startswith("#"):
+                continue
+            items.append(stripped)
+        else:
+            if _MARKDOWN_HEADER_PATTERN.match(
+                stripped
+            ) or _HORIZONTAL_RULE_PATTERN.match(stripped):
+                break
+            if not stripped:
+                continue
+            if stripped.startswith("- "):
+                stripped = stripped[2:].strip()
+            items.append(stripped)
+
+    return items
+
+
+def load_potential_skills() -> List[str]:
+    if not SKILLS_BANK_PATH.exists():
+        return []
+    content = SKILLS_BANK_PATH.read_text(encoding="utf-8")
+    return _skills_bank_section(content, "Potential Skills")
+
+
+_PARENTHETICAL_PATTERN = re.compile(r"\s*\([^)]*\)")
+
+
+def _skill_core_name(skill_line: str) -> str:
+    return _PARENTHETICAL_PATTERN.sub("", skill_line).strip()
 
 
 class TailoredSkill(BaseModel):
@@ -171,6 +253,25 @@ class TailoredResume(BaseModel):
     skills: List[TailoredSkill]
     experience: List[TailoredEntry]
     projects: List[TailoredEntry]
+
+
+def find_used_potential_skills(
+    potential_skills: List[str], candidate: TailoredResume
+) -> List[str]:
+    combined_text = " ".join(
+        [candidate.summary]
+        + [skill.label + skill.rest for skill in candidate.skills]
+        + [
+            bullet
+            for entry in candidate.experience + candidate.projects
+            for bullet in entry.bullets
+        ]
+    ).lower()
+    return [
+        skill_line
+        for skill_line in potential_skills
+        if _skill_core_name(skill_line).lower() in combined_text
+    ]
 
 
 def build_candidate_from_module(module) -> TailoredResume:
@@ -376,13 +477,51 @@ def check_fixed_metrics(module, candidate: TailoredResume) -> List[str]:
     return problems
 
 
-def validate_candidate(module, candidate: TailoredResume) -> List[str]:
+def _candidate_match_corpus(candidate: TailoredResume) -> str:
+    parts = [candidate.summary]
+    parts.extend(skill.label + skill.rest for skill in candidate.skills)
+    for entry in candidate.experience + candidate.projects:
+        parts.append(entry.title)
+        parts.extend(entry.bullets)
+    return normalize_text("\n".join(parts))
+
+
+def check_no_matched_keyword_regression(
+    job_data: JobDescriptionData,
+    previous_content: TailoredResume,
+    candidate: TailoredResume,
+) -> List[str]:
+    previous_corpus = _candidate_match_corpus(previous_content)
+    candidate_corpus = _candidate_match_corpus(candidate)
+
+    problems = []
+    for skill in (job_data.required_skills or []) + (job_data.preferred_skills or []):
+        was_matched = requirement_satisfied(skill, previous_corpus)
+        still_matched = requirement_satisfied(skill, candidate_corpus)
+        if was_matched and not still_matched:
+            problems.append(
+                f'lost previously-matched skill "{skill}"; keep whatever wording '
+                "satisfied this requirement instead of removing or replacing it"
+            )
+    return problems
+
+
+def validate_candidate(
+    module,
+    candidate: TailoredResume,
+    job_data: Optional[JobDescriptionData] = None,
+    previous_content: Optional[TailoredResume] = None,
+) -> List[str]:
     problems = check_structure(module, candidate)
     if problems:
         return problems  # counts/titles wrong — the scans below assume structure holds
     problems += check_em_dashes(candidate)
     problems += check_fixed_metrics(module, candidate)
     problems += check_layout_fit(module, candidate)
+    if job_data is not None and previous_content is not None:
+        problems += check_no_matched_keyword_regression(
+            job_data, previous_content, candidate
+        )
     return problems
 
 
@@ -393,6 +532,7 @@ def generate_tailored_candidate(
     current_content: TailoredResume,
     skills_bank: str,
     reflow_module,
+    job_data: JobDescriptionData,
 ) -> Optional[TailoredResume]:
     retry_feedback = None
     for attempt in range(1, MAX_VALIDATION_RETRIES + 2):  # 1 try + 3 retries
@@ -436,7 +576,9 @@ def generate_tailored_candidate(
             )
             continue
 
-        problems = validate_candidate(reflow_module, candidate)
+        problems = validate_candidate(
+            reflow_module, candidate, job_data, current_content
+        )
         if not problems:
             return candidate
 
@@ -529,7 +671,7 @@ def regrade_candidate(
     job_description: str,
     weight_profile: str,
     tailored_resume: JSONResume,
-) -> float:
+) -> JobEvaluationData:
     resume_text = convert_json_resume_to_text(tailored_resume)
     fresh_evaluator = JobDescriptionEvaluator(
         job_description=job_description,
@@ -537,8 +679,7 @@ def regrade_candidate(
         model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
         weight_profile=weight_profile,
     )
-    evaluation = fresh_evaluator.evaluate(resume_text, resume_data=tailored_resume)
-    return evaluation.weighted_total
+    return fresh_evaluator.evaluate(resume_text, resume_data=tailored_resume)
 
 
 def run_reflow_loop(
@@ -549,12 +690,38 @@ def run_reflow_loop(
     reflow_module,
     skills_bank: str,
     job_description: str,
-) -> Tuple[Optional[TailoredResume], float, List[float]]:
+) -> Tuple[Optional[TailoredResume], float, List[float], Optional[JobEvaluationData]]:
     best_candidate: Optional[TailoredResume] = None
+    best_evaluation: Optional[JobEvaluationData] = None
     best_score = float("-inf")
+    previous_iteration_score: Optional[float] = None
     score_history: List[float] = []
     stagnant_iterations = 0
     current_content = build_candidate_from_module(reflow_module)
+
+    job_data = JobDescriptionEvaluator(
+        job_description=job_description,
+        model_name=DEFAULT_MODEL,
+        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
+        weight_profile=gap.weight_profile,
+    ).extract_job_requirements()
+
+    # gap.missing_required_skills/missing_preferred_skills may be stale --
+    # parsed from a result.md written before this run (possibly by an older,
+    # less accurate matcher). Recompute the real gap fresh from job_data
+    # against the original resume so tailoring always targets an accurate
+    # list from iteration 1, instead of only surfacing the true gap in the
+    # final report after the fact.
+    original_resume_text = convert_json_resume_to_text(original_resume)
+    original_keyword_match = compute_keyword_match(
+        job_data, original_resume_text, original_resume
+    )
+    gap = gap.model_copy(
+        update={
+            "missing_required_skills": original_keyword_match.missing_required,
+            "missing_preferred_skills": original_keyword_match.missing_preferred,
+        }
+    )
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         print(f"\n=== Iteration {iteration}/{MAX_ITERATIONS} ===")
@@ -565,6 +732,7 @@ def run_reflow_loop(
             current_content,
             skills_bank,
             reflow_module,
+            job_data,
         )
         if candidate is None:
             print(
@@ -580,19 +748,32 @@ def run_reflow_loop(
             continue
 
         tailored_resume = apply_candidate_to_resume(original_resume, candidate)
-        iteration_score = regrade_candidate(
+        evaluation = regrade_candidate(
             job_description, gap.weight_profile, tailored_resume
         )
+        iteration_score = evaluation.weighted_total
         score_history.append(iteration_score)
         print(f"Iteration {iteration} weighted total: {iteration_score}/100")
 
         if iteration_score > best_score:
             best_score = iteration_score
             best_candidate = candidate
-            current_content = candidate
+            best_evaluation = evaluation
+
+        if (
+            previous_iteration_score is None
+            or iteration_score > previous_iteration_score
+        ):
             stagnant_iterations = 0
         else:
             stagnant_iterations += 1
+        previous_iteration_score = iteration_score
+
+        # Always tailor forward from this iteration's actual output, even
+        # when it didn't beat the best score seen so far -- otherwise every
+        # non-improving iteration resamples the same stale starting point
+        # instead of building on what was just tried.
+        current_content = candidate
 
         if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
             print(
@@ -601,7 +782,7 @@ def run_reflow_loop(
             )
             break
 
-    return best_candidate, best_score, score_history
+    return best_candidate, best_score, score_history, best_evaluation
 
 
 def resolve_band(score: float) -> Optional[str]:
@@ -704,7 +885,7 @@ def main():
     tailor_provider = initialize_llm_provider(TAILOR_MODEL)
     template_manager = TemplateManager()
 
-    best_candidate, best_score, score_history = run_reflow_loop(
+    best_candidate, best_score, score_history, best_evaluation = run_reflow_loop(
         tailor_provider,
         template_manager,
         gap,
@@ -728,10 +909,30 @@ def main():
 
     print(f"Best score: {best_score}/100 — band {band}")
     write_tailored_generator(best_candidate, reflow_module)
-    print(
-        f"Render it with: python {TAILORED_RESUME_PATH} "
-        "(layout and render engine are byte-identical to reflow_resume.py)"
+    output_pdf_path = render_tailored_resume()
+    print(f"Rendered {output_pdf_path}")
+
+    candidate_name = "Candidate"
+    if original_resume.basics is not None and original_resume.basics.name:
+        candidate_name = original_resume.basics.name
+    write_result_markdown(
+        build_job_evaluation_markdown(best_evaluation, candidate_name)
     )
+    print(
+        f"Wrote final tailoring recommendations (what's boosting your score and "
+        f"what's keeping it from 100%) to {RESULT_FILE_PATH}"
+    )
+
+    used_potential_skills = find_used_potential_skills(
+        load_potential_skills(), best_candidate
+    )
+    if used_potential_skills:
+        print(
+            "\nPolish up before the interview — these rusty skills made it into "
+            "this tailored resume:"
+        )
+        for skill in used_potential_skills:
+            print(f"  - {skill}")
 
 
 if __name__ == "__main__":

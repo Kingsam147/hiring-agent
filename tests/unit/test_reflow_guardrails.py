@@ -7,6 +7,7 @@ reflow_resume.py.
 import copy
 
 import reflow
+from models import JobDescriptionData
 
 
 def test_current_fixture_content_passes_all_guardrails(fake_reflow_module):
@@ -66,3 +67,66 @@ def test_validate_candidate_short_circuits_on_structure_failure(fake_reflow_modu
     problems = reflow.validate_candidate(fake_reflow_module, candidate)
 
     assert any("skills lines" in problem for problem in problems)
+
+
+def _job_data(**overrides):
+    defaults = dict(
+        job_title="Backend Engineer",
+        required_skills=["Kubernetes", "React"],
+        preferred_skills=[],
+    )
+    defaults.update(overrides)
+    return JobDescriptionData(**defaults)
+
+
+def test_check_no_matched_keyword_regression_flags_dropped_match(fake_reflow_module):
+    previous_content = reflow.build_candidate_from_module(fake_reflow_module)
+    previous_content.skills[0] = reflow.TailoredSkill(
+        label="Languages: ", rest="Python, Kubernetes"
+    )
+    candidate = copy.deepcopy(previous_content)
+    candidate.skills[0] = reflow.TailoredSkill(label="Languages: ", rest="Python, Go")
+
+    problems = reflow.check_no_matched_keyword_regression(
+        _job_data(), previous_content, candidate
+    )
+
+    assert any("Kubernetes" in problem for problem in problems)
+
+
+def test_check_no_matched_keyword_regression_allows_unrelated_changes(
+    fake_reflow_module,
+):
+    previous_content = reflow.build_candidate_from_module(fake_reflow_module)
+    previous_content.skills[0] = reflow.TailoredSkill(
+        label="Languages: ", rest="Python, Kubernetes"
+    )
+    candidate = copy.deepcopy(previous_content)
+    candidate.summary = "A rewritten but still Kubernetes-mentioning summary."
+
+    problems = reflow.check_no_matched_keyword_regression(
+        _job_data(), previous_content, candidate
+    )
+
+    assert problems == []
+
+
+def test_check_no_matched_keyword_regression_ignores_never_matched_skills(
+    fake_reflow_module,
+):
+    previous_content = reflow.build_candidate_from_module(fake_reflow_module)
+    candidate = copy.deepcopy(previous_content)
+
+    problems = reflow.check_no_matched_keyword_regression(
+        _job_data(), previous_content, candidate
+    )
+
+    assert problems == []
+
+
+def test_validate_candidate_skips_regression_check_without_job_data(
+    fake_reflow_module,
+):
+    candidate = reflow.build_candidate_from_module(fake_reflow_module)
+
+    assert reflow.validate_candidate(fake_reflow_module, candidate) == []
