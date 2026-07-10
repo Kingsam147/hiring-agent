@@ -12,10 +12,33 @@ from models import JSONResume, SeniorityAssessment
 # Checked highest tier first — first match wins, so "Senior Engineering
 # Manager" resolves to the leadership tier, not "senior".
 SENIORITY_TIERS: List[Tuple[int, str, List[str]]] = [
-    (5, "Lead/Management", ["lead", "manager", "head", "director", "vp", "vice president", "chief", "cto", "ceo", "founder"]),
-    (4, "Staff/Principal", ["staff", "principal", "architect", "distinguished", "fellow"]),
+    (
+        5,
+        "Lead/Management",
+        [
+            "lead",
+            "manager",
+            "head",
+            "director",
+            "vp",
+            "vice president",
+            "chief",
+            "cto",
+            "ceo",
+            "founder",
+        ],
+    ),
+    (
+        4,
+        "Staff/Principal",
+        ["staff", "principal", "architect", "distinguished", "fellow"],
+    ),
     (3, "Senior", ["senior", "sr"]),
-    (1, "Junior/Associate", ["junior", "jr", "associate", "entry level", "graduate", "trainee"]),
+    (
+        1,
+        "Junior/Associate",
+        ["junior", "jr", "associate", "entry level", "graduate", "trainee"],
+    ),
     (0, "Intern", ["intern", "internship", "co op", "apprentice"]),
 ]
 DEFAULT_TIER: Tuple[int, str] = (2, "Mid (unmarked)")
@@ -33,11 +56,15 @@ def detect_seniority(title: Optional[str]) -> Tuple[int, str]:
     return DEFAULT_TIER
 
 
-def assess_seniority(job_title: str, resume_data: Optional[JSONResume]) -> Optional[SeniorityAssessment]:
+def assess_seniority(
+    job_title: str, resume_data: Optional[JSONResume]
+) -> Optional[SeniorityAssessment]:
     if resume_data is None or not resume_data.work:
         return None
 
-    positions = [work_item.position for work_item in resume_data.work if work_item.position]
+    positions = [
+        work_item.position for work_item in resume_data.work if work_item.position
+    ]
     if not positions:
         return None
 

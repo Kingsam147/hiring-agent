@@ -1,0 +1,73 @@
+Tailor the resume content below toward this job. Close as much of the listed gap as you truthfully can by reworking wording, emphasis, and terminology — surfacing matching skills from the SKILLS BANK where they are genuinely relevant.
+
+## TARGET JOB
+
+Job title: {{ job_title }}
+
+Required skills the resume is MISSING:
+{% for skill in missing_required_skills %}
+- {{ skill }}
+{% else %}
+- (none)
+{% endfor %}
+
+Preferred skills the resume is missing:
+{% for skill in missing_preferred_skills %}
+- {{ skill }}
+{% else %}
+- (none)
+{% endfor %}
+
+Areas for improvement from the last evaluation:
+{% for area in improvement_areas %}
+- {{ area }}
+{% else %}
+- (none)
+{% endfor %}
+
+## CURRENT RESUME CONTENT
+
+SUMMARY:
+{{ summary }}
+
+SKILLS (label + rest pairs — keep the same count and the same label wording unless a label rename is clearly justified by the job):
+{% for skill in skills %}
+- label: "{{ skill.label }}" rest: "{{ skill.rest }}"
+{% endfor %}
+
+EXPERIENCE (titles are fixed; bullet counts are fixed):
+{% for entry in experience %}
+### {{ entry.title }}
+{% for bullet in entry.bullets %}
+- {{ bullet }}
+{% endfor %}
+{% endfor %}
+
+PROJECTS (titles are fixed; bullet counts are fixed):
+{% for entry in projects %}
+### {{ entry.title }}
+{% for bullet in entry.bullets %}
+- {{ bullet }}
+{% endfor %}
+{% endfor %}
+
+## SKILLS BANK (additional truthful skills/projects you MAY draw on — this bank may be empty)
+
+{{ skills_bank if skills_bank else "(empty)" }}
+
+{% if retry_feedback %}
+## PROBLEMS WITH YOUR PREVIOUS ATTEMPT — FIX THESE
+
+{{ retry_feedback }}
+{% endif %}
+
+## OUTPUT
+
+Return ONLY this JSON structure, nothing else:
+
+{
+    "summary": "string",
+    "skills": [{"label": "string", "rest": "string"}],
+    "experience": [{"title": "string", "bullets": ["string"]}],
+    "projects": [{"title": "string", "bullets": ["string"]}]
+}

@@ -20,9 +20,6 @@ Overall Match: {{ weighted_total }}/100
 Coverage: {{ keyword_match.coverage_score }}/100{% if keyword_match.gated %} (capped — a must-have qualification issue was found){% endif %}
 Matched required skills: {{ keyword_match.matched_required | join(", ") if keyword_match.matched_required else "None" }}
 Missing required skills: {{ keyword_match.missing_required | join(", ") if keyword_match.missing_required else "None" }}
-{% if keyword_match.knockout_failed %}
-A must-have qualification was explicitly rejected by a human reviewer during this evaluation, which caps the overall score at 30.
-{% endif %}
 {% endif %}
 
 {% if seniority %}

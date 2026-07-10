@@ -49,6 +49,8 @@ class TemplateManager:
             "job_evaluation_criteria": "job_evaluation_criteria.jinja",
             "job_evaluation_system_message": "job_evaluation_system_message.jinja",
             "why_this_score": "why_this_score.jinja",
+            "resume_reflow_system_message": "resume_reflow_system_message.jinja",
+            "resume_reflow_user_message": "resume_reflow_user_message.jinja",
         }
 
         for section_name, filename in template_files.items():

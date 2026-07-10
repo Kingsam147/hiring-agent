@@ -82,9 +82,14 @@ def _years_between(start: date, end: date) -> float:
     return round((end - start).days / 365.25, 1)
 
 
-def compute_skill_experience(required_skills: List[str], work: Optional[List[Work]]) -> List[SkillExperience]:
+def compute_skill_experience(
+    required_skills: List[str], work: Optional[List[Work]]
+) -> List[SkillExperience]:
     if not work:
-        return [SkillExperience(skill=skill, years=0.0, evidence=[]) for skill in required_skills]
+        return [
+            SkillExperience(skill=skill, years=0.0, evidence=[])
+            for skill in required_skills
+        ]
 
     results = []
     for skill in required_skills:
@@ -97,7 +102,9 @@ def compute_skill_experience(required_skills: List[str], work: Optional[List[Wor
             if interval is None:
                 continue
             intervals.append(interval)
-            evidence.append(f"{work_item.position or 'Unknown role'} ({work_item.startDate} - {work_item.endDate})")
+            evidence.append(
+                f"{work_item.position or 'Unknown role'} ({work_item.startDate} - {work_item.endDate})"
+            )
 
         merged = merge_intervals(intervals)
         years = round(sum(_years_between(start, end) for start, end in merged), 1)
@@ -110,7 +117,11 @@ def compute_total_experience_years(work: Optional[List[Work]]) -> Optional[float
     if not work:
         return None
 
-    intervals = [interval for interval in (_work_interval(work_item) for work_item in work) if interval is not None]
+    intervals = [
+        interval
+        for interval in (_work_interval(work_item) for work_item in work)
+        if interval is not None
+    ]
     if not intervals:
         return None
 

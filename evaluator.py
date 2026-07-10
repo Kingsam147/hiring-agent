@@ -1,5 +1,5 @@
-from typing import Dict, List, Optional, Tuple, Any, Type, Callable
-from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Type
+from pydantic import BaseModel
 from models import (
     JSONResume,
     EvaluationData,
@@ -17,8 +17,6 @@ from keyword_matching import (
     compute_keyword_match,
     build_skills_evidence,
     compute_industry_mentions,
-    apply_knockout_resolutions,
-    KNOCKOUT_CAP,
 )
 from seniority import assess_seniority
 from weight_profiles import get_profile, DEFAULT_PROFILE
@@ -135,7 +133,9 @@ def _read_llm_cache(path: str, model_cls: Type[BaseModel]) -> Optional[BaseModel
             cached_data = json.load(cache_file)
         return model_cls(**cached_data)
     except Exception as e:
-        logger.warning(f"⚠️ Warning: Invalid cache file {path}: {e}. Ignoring cache and re-running LLM call.")
+        logger.warning(
+            f"⚠️ Warning: Invalid cache file {path}: {e}. Ignoring cache and re-running LLM call."
+        )
         try:
             os.remove(path)
         except Exception as delete_err:
@@ -176,15 +176,18 @@ class JobDescriptionEvaluator:
         self.weights = get_profile(weight_profile)
         self.template_manager = TemplateManager()
         self.provider = initialize_llm_provider(model_name)
-        self._load_embedding_model()
+        self.embedding_model = None
 
     def _load_embedding_model(self):
         from sentence_transformers import SentenceTransformer
+
         logger.info("Loading Sentence Transformers model (all-MiniLM-L6-v2)...")
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_job_requirements(self) -> JobDescriptionData:
-        cache_path = f"cache/jdreqcache_{_hash_key(self.model_name, self.job_description)}.json"
+        cache_path = (
+            f"cache/jdreqcache_{_hash_key(self.model_name, self.job_description)}.json"
+        )
         cached = _read_llm_cache(cache_path, JobDescriptionData)
         if cached is not None:
             logger.info(f"Loaded job requirements from cache {cache_path}")
@@ -208,7 +211,9 @@ class JobDescriptionEvaluator:
             "options": self.model_params,
         }
 
-        response = self.provider.chat(**chat_params, format=JobDescriptionData.model_json_schema())
+        response = self.provider.chat(
+            **chat_params, format=JobDescriptionData.model_json_schema()
+        )
         response_text = extract_json_from_response(response["message"]["content"])
         job_data = JobDescriptionData(**json.loads(response_text))
         _write_llm_cache(cache_path, job_data)
@@ -216,8 +221,13 @@ class JobDescriptionEvaluator:
 
     def compute_semantic_score(self, resume_text: str) -> float:
         from sentence_transformers import util
-        job_embedding = self.embedding_model.encode(self.job_description, convert_to_tensor=True)
-        resume_embedding = self.embedding_model.encode(resume_text, convert_to_tensor=True)
+
+        job_embedding = self.embedding_model.encode(
+            self.job_description, convert_to_tensor=True
+        )
+        resume_embedding = self.embedding_model.encode(
+            resume_text, convert_to_tensor=True
+        )
         similarity = util.cos_sim(job_embedding, resume_embedding).item()
         return round(max(0.0, similarity) * 100, 1)
 
@@ -237,7 +247,9 @@ class JobDescriptionEvaluator:
             logger.info(f"Loaded job evaluation from cache {cache_path}")
             return cached
 
-        system_message = self.template_manager.render_template("job_evaluation_system_message")
+        system_message = self.template_manager.render_template(
+            "job_evaluation_system_message"
+        )
         if system_message is None:
             raise ValueError("Failed to render job_evaluation_system_message template")
 
@@ -273,7 +285,9 @@ class JobDescriptionEvaluator:
             },
         }
 
-        response = self.provider.chat(**chat_params, format=LLMJobEvaluationResponse.model_json_schema())
+        response = self.provider.chat(
+            **chat_params, format=LLMJobEvaluationResponse.model_json_schema()
+        )
         response_text = extract_json_from_response(response["message"]["content"])
         logger.info(f"Job evaluation LLM response: {response_text}")
         evaluation_response = LLMJobEvaluationResponse(**json.loads(response_text))
@@ -283,11 +297,11 @@ class JobDescriptionEvaluator:
     def generate_score_summary(self, evaluation: JobEvaluationData) -> Optional[str]:
         try:
             canonical_payload = json.dumps(
-                evaluation.model_dump(exclude={"score_summary"}), sort_keys=True, ensure_ascii=False
+                evaluation.model_dump(exclude={"score_summary"}),
+                sort_keys=True,
+                ensure_ascii=False,
             )
-            cache_path = (
-                f"cache/summarycache_{_hash_key(self.model_name, SUMMARY_PROMPT_VERSION, canonical_payload)}.json"
-            )
+            cache_path = f"cache/summarycache_{_hash_key(self.model_name, SUMMARY_PROMPT_VERSION, canonical_payload)}.json"
             cached = _read_llm_cache(cache_path, ScoreSummary)
             if cached is not None:
                 logger.info(f"Loaded score summary from cache {cache_path}")
@@ -332,7 +346,9 @@ class JobDescriptionEvaluator:
             logger.warning(f"Failed to generate score summary: {e}")
             return None
 
-    def _compute_weighted_total(self, scores: JobScores, semantic_score: float) -> float:
+    def _compute_weighted_total(
+        self, scores: JobScores, semantic_score: float
+    ) -> float:
         total = (
             scores.skills_match.score * self.weights["skills_match"]
             + scores.experience_match.score * self.weights["experience_match"]
@@ -340,7 +356,8 @@ class JobDescriptionEvaluator:
             + scores.job_title_alignment.score * self.weights["job_title_alignment"]
             + scores.education.score * self.weights["education"]
             + scores.resume_quality.score * self.weights["resume_quality"]
-            + scores.missing_critical_requirements.score * self.weights["missing_critical_requirements"]
+            + scores.missing_critical_requirements.score
+            * self.weights["missing_critical_requirements"]
         )
         return round(min(total, 100.0), 1)
 
@@ -348,22 +365,23 @@ class JobDescriptionEvaluator:
         self,
         resume_text: str,
         resume_data: Optional[JSONResume] = None,
-        knockout_resolver: Optional[Callable[[str], Optional[bool]]] = None,
     ) -> JobEvaluationData:
         logger.info("Extracting requirements from job description...")
         job_data = self.extract_job_requirements()
-        logger.info(f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}")
+        logger.info(
+            f"Job title: {job_data.job_title} | Required skills: {job_data.required_skills}"
+        )
 
         logger.info("Computing deterministic keyword match...")
         keyword_result = compute_keyword_match(job_data, resume_text, resume_data)
+
         logger.info(
             f"Keyword coverage: {keyword_result.coverage_score} | "
             f"Missing required: {keyword_result.missing_required}"
         )
 
-        keyword_result = apply_knockout_resolutions(keyword_result, knockout_resolver)
-        if keyword_result.knockout_failed:
-            logger.info("A must-have qualification was rejected by the reviewer — capping score.")
+        if self.embedding_model is None:
+            self._load_embedding_model()
 
         logger.info("Assessing job-title seniority...")
         seniority = assess_seniority(job_data.job_title, resume_data)
@@ -380,7 +398,9 @@ class JobDescriptionEvaluator:
         logger.info(f"Semantic match score: {semantic_score}")
 
         logger.info("Scoring resume against job requirements...")
-        llm_result = self._score_resume(resume_text, job_data, keyword_result, seniority)
+        llm_result = self._score_resume(
+            resume_text, job_data, keyword_result, seniority
+        )
 
         scores = JobScores(
             skills_match=JobCategoryScore(
@@ -395,8 +415,6 @@ class JobDescriptionEvaluator:
         )
 
         weighted_total = self._compute_weighted_total(scores, semantic_score)
-        if keyword_result.knockout_failed:
-            weighted_total = min(weighted_total, KNOCKOUT_CAP)
 
         result = JobEvaluationData(
             scores=scores,
