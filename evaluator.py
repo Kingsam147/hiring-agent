@@ -181,6 +181,22 @@ class JobDescriptionEvaluator:
     def _load_embedding_model(self):
         from sentence_transformers import SentenceTransformer
 
+        # Prefer the vendored copy (models_local/) so environments that
+        # can't reach huggingface.co (e.g. sandboxed agent containers)
+        # still get the exact same model; fall back to the hub name for
+        # fresh clones that haven't vendored it.
+        local_model_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "models_local",
+            "all-MiniLM-L6-v2",
+        )
+        if os.path.isdir(local_model_path):
+            logger.info(
+                "Loading Sentence Transformers model from vendored copy "
+                f"({local_model_path})..."
+            )
+            self.embedding_model = SentenceTransformer(local_model_path)
+            return
         logger.info("Loading Sentence Transformers model (all-MiniLM-L6-v2)...")
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 

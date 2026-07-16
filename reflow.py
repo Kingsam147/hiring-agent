@@ -1,14 +1,20 @@
-"""Resume reflow orchestrator.
+"""Resume reflow validator/regrader.
 
-Reads the latest job-match gap analysis (result.md), tailors the CONTENT
-block of resume/resume_reflow/reflow_resume.py with Claude Sonnet 5, regrades
-each candidate with the existing JobDescriptionEvaluator pipeline, and writes
-resume/resume_reflow/reflow_resume_tailored.py when the best score is >= 70.
+Tailored content is written by the calling agent (e.g. a Claude chat running
+the resume-reflow-pipeline skill), not by an LLM API call from this script.
+This script only supplies the tailoring context, validates candidates against
+the guardrails, regrades them with the existing JobDescriptionEvaluator
+pipeline, and writes resume/resume_reflow/reflow_resume_tailored.py when a
+candidate sets a new best score >= 70.
 
-Run: python reflow.py   (after a successful `python score.py` run)
+Run (after a successful `python score.py` run):
+    python reflow.py --show-context
+    python reflow.py --candidate <path-to-candidate.json>
 """
 
+import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 import logging
@@ -21,15 +27,13 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel
 
 from evaluator import JobDescriptionEvaluator
-from llm_utils import initialize_llm_provider, extract_json_from_response
 from keyword_matching import (
     compute_keyword_match,
     normalize_text,
     requirement_satisfied,
 )
 from models import JobDescriptionData, JobEvaluationData, JSONResume, Skill
-from prompt import DEFAULT_MODEL, MODEL_PARAMETERS, CLAUDE_API_KEY
-from prompts.template_manager import TemplateManager
+from prompt import DEFAULT_MODEL, MODEL_PARAMETERS
 from score import (
     RESULT_FILE_PATH,
     build_job_evaluation_markdown,
@@ -41,14 +45,10 @@ from transform import convert_json_resume_to_text
 
 logger = logging.getLogger(__name__)
 
-TAILOR_MODEL = "claude-sonnet-5"
 REFLOW_RESUME_PATH = Path("resume/resume_reflow/reflow_resume.py")
 TAILORED_RESUME_PATH = Path("resume/resume_reflow/reflow_resume_tailored.py")
 SKILLS_BANK_PATH = Path("resume/resume_reflow/skills_bank.txt")
-
-MAX_ITERATIONS = 6
-MAX_STAGNANT_ITERATIONS = 2
-MAX_VALIDATION_RETRIES = 3
+REFLOW_STATE_PATH = Path("resume/resume_reflow/reflow_state.json")
 
 FULL_REPORT_HEADER = "# Job Match Evaluation:"
 TARGET_ROLE_PREFIX = "**Target Role:** "
@@ -525,74 +525,6 @@ def validate_candidate(
     return problems
 
 
-def generate_tailored_candidate(
-    tailor_provider,
-    template_manager: TemplateManager,
-    gap: GapAnalysis,
-    current_content: TailoredResume,
-    skills_bank: str,
-    reflow_module,
-    job_data: JobDescriptionData,
-) -> Optional[TailoredResume]:
-    retry_feedback = None
-    for attempt in range(1, MAX_VALIDATION_RETRIES + 2):  # 1 try + 3 retries
-        system_message = template_manager.render_template(
-            "resume_reflow_system_message"
-        )
-        user_message = template_manager.render_template(
-            "resume_reflow_user_message",
-            job_title=gap.job_title,
-            missing_required_skills=gap.missing_required_skills,
-            missing_preferred_skills=gap.missing_preferred_skills,
-            improvement_areas=gap.improvement_areas,
-            summary=current_content.summary,
-            skills=current_content.skills,
-            experience=current_content.experience,
-            projects=current_content.projects,
-            skills_bank=skills_bank,
-            retry_feedback=retry_feedback,
-        )
-        if system_message is None or user_message is None:
-            sys.exit("Error: failed to render the resume reflow templates.")
-
-        response = tailor_provider.chat(
-            model=TAILOR_MODEL,
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message},
-            ],
-        )
-
-        try:
-            response_text = extract_json_from_response(response["message"]["content"])
-            candidate = TailoredResume(**json.loads(response_text))
-        except Exception as parse_error:
-            logger.warning(
-                f"Tailor attempt {attempt}: unparseable response ({parse_error})"
-            )
-            retry_feedback = (
-                "Your previous reply was not valid JSON matching the required "
-                f"structure: {parse_error}. Return ONLY the JSON object."
-            )
-            continue
-
-        problems = validate_candidate(
-            reflow_module, candidate, job_data, current_content
-        )
-        if not problems:
-            return candidate
-
-        logger.warning(
-            f"Tailor attempt {attempt}: {len(problems)} guardrail problem(s)"
-        )
-        retry_feedback = "; ".join(problems)
-
-    logger.warning(
-        "Discarding this iteration's candidate: guardrails still failing after retries."
-    )
-    return None
-
-
 def _find_work_entry(work_items, title: str):
     if not work_items:
         return None
@@ -682,109 +614,6 @@ def regrade_candidate(
     return fresh_evaluator.evaluate(resume_text, resume_data=tailored_resume)
 
 
-def run_reflow_loop(
-    tailor_provider,
-    template_manager: TemplateManager,
-    gap: GapAnalysis,
-    original_resume: JSONResume,
-    reflow_module,
-    skills_bank: str,
-    job_description: str,
-) -> Tuple[Optional[TailoredResume], float, List[float], Optional[JobEvaluationData]]:
-    best_candidate: Optional[TailoredResume] = None
-    best_evaluation: Optional[JobEvaluationData] = None
-    best_score = float("-inf")
-    previous_iteration_score: Optional[float] = None
-    score_history: List[float] = []
-    stagnant_iterations = 0
-    current_content = build_candidate_from_module(reflow_module)
-
-    job_data = JobDescriptionEvaluator(
-        job_description=job_description,
-        model_name=DEFAULT_MODEL,
-        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
-        weight_profile=gap.weight_profile,
-    ).extract_job_requirements()
-
-    # gap.missing_required_skills/missing_preferred_skills may be stale --
-    # parsed from a result.md written before this run (possibly by an older,
-    # less accurate matcher). Recompute the real gap fresh from job_data
-    # against the original resume so tailoring always targets an accurate
-    # list from iteration 1, instead of only surfacing the true gap in the
-    # final report after the fact.
-    original_resume_text = convert_json_resume_to_text(original_resume)
-    original_keyword_match = compute_keyword_match(
-        job_data, original_resume_text, original_resume
-    )
-    gap = gap.model_copy(
-        update={
-            "missing_required_skills": original_keyword_match.missing_required,
-            "missing_preferred_skills": original_keyword_match.missing_preferred,
-        }
-    )
-
-    for iteration in range(1, MAX_ITERATIONS + 1):
-        print(f"\n=== Iteration {iteration}/{MAX_ITERATIONS} ===")
-        candidate = generate_tailored_candidate(
-            tailor_provider,
-            template_manager,
-            gap,
-            current_content,
-            skills_bank,
-            reflow_module,
-            job_data,
-        )
-        if candidate is None:
-            print(
-                "No valid candidate this iteration (guardrails failed after retries)."
-            )
-            stagnant_iterations += 1
-            if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
-                print(
-                    "Stopping early: no improvement for "
-                    f"{MAX_STAGNANT_ITERATIONS} consecutive iterations."
-                )
-                break
-            continue
-
-        tailored_resume = apply_candidate_to_resume(original_resume, candidate)
-        evaluation = regrade_candidate(
-            job_description, gap.weight_profile, tailored_resume
-        )
-        iteration_score = evaluation.weighted_total
-        score_history.append(iteration_score)
-        print(f"Iteration {iteration} weighted total: {iteration_score}/100")
-
-        if iteration_score > best_score:
-            best_score = iteration_score
-            best_candidate = candidate
-            best_evaluation = evaluation
-
-        if (
-            previous_iteration_score is None
-            or iteration_score > previous_iteration_score
-        ):
-            stagnant_iterations = 0
-        else:
-            stagnant_iterations += 1
-        previous_iteration_score = iteration_score
-
-        # Always tailor forward from this iteration's actual output, even
-        # when it didn't beat the best score seen so far -- otherwise every
-        # non-improving iteration resamples the same stale starting point
-        # instead of building on what was just tried.
-        current_content = candidate
-
-        if stagnant_iterations >= MAX_STAGNANT_ITERATIONS:
-            print(
-                "Stopping early: no improvement for "
-                f"{MAX_STAGNANT_ITERATIONS} consecutive iterations."
-            )
-            break
-
-    return best_candidate, best_score, score_history, best_evaluation
-
-
 def resolve_band(score: float) -> Optional[str]:
     if score < 70:
         return None
@@ -860,79 +689,302 @@ def write_tailored_generator(candidate: TailoredResume, reflow_module) -> None:
     print(f"Wrote {TAILORED_RESUME_PATH}")
 
 
-def main():
-    if not CLAUDE_API_KEY:
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _current_input_hashes() -> Dict[str, str]:
+    return {
+        "resume_hash": _hash_text(REFLOW_RESUME_PATH.read_text(encoding="utf-8")),
+        "jd_hash": _hash_text(load_job_description()),
+    }
+
+
+def load_reflow_state() -> Optional[float]:
+    """Return the saved best score for the current inputs, or None.
+
+    The state is hash-gated against the base resume's content and the job
+    description's content: if either changed since the state was written,
+    the saved best no longer applies and the session starts over.
+    """
+    if not REFLOW_STATE_PATH.exists():
+        return None
+    try:
+        state = json.loads(REFLOW_STATE_PATH.read_text(encoding="utf-8"))
+        saved_best = float(state["best_score"])
+        saved_hashes = {
+            "resume_hash": state["resume_hash"],
+            "jd_hash": state["jd_hash"],
+        }
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         sys.exit(
-            "Error: CLAUDE_API_KEY is not set. Add it to your .env "
-            "(see .env.example) — reflow.py tailors with Claude Sonnet 5."
+            f"Error: malformed session cache '{REFLOW_STATE_PATH}' ({exc}). "
+            "Delete the file to start a fresh tailoring session."
         )
+    if saved_hashes != _current_input_hashes():
+        print(
+            "Note: base resume or job description changed since the last "
+            "session; previous best score reset."
+        )
+        return None
+    return saved_best
 
+
+def save_reflow_state(best_score: float) -> None:
+    state = _current_input_hashes()
+    state["best_score"] = best_score
+    REFLOW_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REFLOW_STATE_PATH.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+class ReflowContext(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
+    gap: GapAnalysis
+    job_description: str
+    original_resume: JSONResume
+    skills_bank: str
+    job_data: JobDescriptionData
+    current_content: TailoredResume
+    missing_soft_skills: List[str]
+
+
+def gather_context() -> Tuple[ReflowContext, object]:
+    """Load everything both CLI modes need. Returns (context, reflow_module).
+
+    Requires a prior successful `python score.py` run (result.md and the
+    resume cache must exist). The job-requirement extraction goes through the
+    configured LLM provider but is cached by content hash, so repeat calls
+    within a session are free.
+    """
     gap = parse_result_markdown()
-    print(f"Target role: {gap.job_title} | weight profile: {gap.weight_profile}")
-    print(f"Missing required skills: {gap.missing_required_skills or 'none'}")
-    print(f"Missing preferred skills: {gap.missing_preferred_skills or 'none'}")
-
     job_description = load_job_description()
     original_resume = load_cached_resume()
     reflow_module = load_reflow_resume_module()
     skills_bank = load_skills_bank()
     if not skills_bank:
         print(
-            f"Note: '{SKILLS_BANK_PATH}' is empty — tailoring will only rework "
+            f"Note: '{SKILLS_BANK_PATH}' is empty - tailoring will only rework "
             "content already in the resume."
         )
 
-    tailor_provider = initialize_llm_provider(TAILOR_MODEL)
-    template_manager = TemplateManager()
+    job_data = JobDescriptionEvaluator(
+        job_description=job_description,
+        model_name=DEFAULT_MODEL,
+        model_params=MODEL_PARAMETERS.get(DEFAULT_MODEL),
+        weight_profile=gap.weight_profile,
+    ).extract_job_requirements()
 
-    best_candidate, best_score, score_history, best_evaluation = run_reflow_loop(
-        tailor_provider,
-        template_manager,
-        gap,
-        original_resume,
-        reflow_module,
-        skills_bank,
-        job_description,
+    # gap.missing_required_skills/missing_preferred_skills may be stale --
+    # parsed from a result.md written before this run. Recompute the real gap
+    # fresh from job_data against the original resume so tailoring always
+    # targets an accurate list.
+    original_resume_text = convert_json_resume_to_text(original_resume)
+    original_keyword_match = compute_keyword_match(
+        job_data, original_resume_text, original_resume
+    )
+    gap = gap.model_copy(
+        update={
+            "missing_required_skills": original_keyword_match.missing_required,
+            "missing_preferred_skills": original_keyword_match.missing_preferred,
+        }
     )
 
-    print("\n" + "=" * 60)
-    print(f"Score history: {score_history or 'no scored candidates'}")
+    context = ReflowContext(
+        gap=gap,
+        job_description=job_description,
+        original_resume=original_resume,
+        skills_bank=skills_bank,
+        job_data=job_data,
+        current_content=build_candidate_from_module(reflow_module),
+        missing_soft_skills=list(original_keyword_match.missing_soft_skills or []),
+    )
+    return context, reflow_module
 
-    band = resolve_band(best_score) if best_candidate is not None else None
+
+def _print_list(header: str, items: List[str]) -> None:
+    print(f"{header}:")
+    if not items:
+        print("  (none)")
+        return
+    for item in items:
+        print(f"  - {item}")
+
+
+def show_context() -> None:
+    context, _ = gather_context()
+    gap = context.gap
+    content = context.current_content
+
+    print(f"Target role: {gap.job_title} | weight profile: {gap.weight_profile}")
+    print()
+    _print_list("Missing REQUIRED skills", gap.missing_required_skills)
+    _print_list("Missing preferred skills", gap.missing_preferred_skills)
+    _print_list(
+        "Missing SOFT skills (each must appear verbatim in your candidate)",
+        context.missing_soft_skills,
+    )
+    _print_list("Areas for improvement (from score.py)", gap.improvement_areas)
+
+    print()
+    print("=" * 60)
+    print("CURRENT RESUME CONTENT (your candidate must keep this structure)")
+    print("=" * 60)
+    print(f"\nSUMMARY:\n{content.summary}")
+    print(f"\nSKILLS ({len(content.skills)} lines):")
+    for skill in content.skills:
+        print(f"  label={skill.label!r} rest={skill.rest!r}")
+    for section_name, entries in (
+        ("EXPERIENCE", content.experience),
+        ("PROJECTS", content.projects),
+    ):
+        print(f"\n{section_name} ({len(entries)} entries):")
+        for entry in entries:
+            print(f"  title={entry.title!r} ({len(entry.bullets)} bullets)")
+            for bullet in entry.bullets:
+                print(f"    - {bullet}")
+
+    print()
+    print("=" * 60)
+    print("SKILLS BANK (verified skills you may draw on)")
+    print("=" * 60)
+    print(context.skills_bank or "(empty)")
+
+    saved_best = load_reflow_state()
+    print()
+    if saved_best is None:
+        print("Session state: fresh session, no previous best score.")
+    else:
+        print(f"Session state: resuming, previous best score {saved_best}/100.")
+
+
+def evaluate_candidate(candidate_path: str) -> None:
+    context, reflow_module = gather_context()
+
+    candidate_file = Path(candidate_path)
+    if not candidate_file.exists():
+        sys.exit(f"Error: candidate file '{candidate_path}' not found.")
+    try:
+        candidate = TailoredResume(
+            **json.loads(candidate_file.read_text(encoding="utf-8"))
+        )
+    except Exception as exc:
+        sys.exit(
+            f"Error: '{candidate_path}' is not valid JSON matching the required "
+            f"candidate structure: {exc}"
+        )
+
+    problems = validate_candidate(
+        reflow_module, candidate, context.job_data, context.current_content
+    )
+    problems += _check_missing_soft_skills(candidate, context.missing_soft_skills)
+    if problems:
+        print("VALIDATION FAILED:")
+        for problem in problems:
+            print(f"  - {problem}")
+        return
+
+    tailored_resume = apply_candidate_to_resume(context.original_resume, candidate)
+    evaluation = regrade_candidate(
+        context.job_description, context.gap.weight_profile, tailored_resume
+    )
+    score = evaluation.weighted_total
+
+    previous_best = load_reflow_state()
+    previous_display = "none" if previous_best is None else f"{previous_best}"
+    print(f"SCORE: {score}/100 (previous best: {previous_display}/100)")
+
+    band = resolve_band(score)
     if band is None:
         print(
-            f"Best score {best_score if best_candidate else 'n/a'}/100 is below 70. "
-            "This job is not a compatible match for the current skills and "
-            "experience — no tailored resume written."
+            "Not written: score is below 70. This candidate is not a "
+            "compatible enough match to render."
+        )
+        return
+    if previous_best is not None and score <= previous_best:
+        print(
+            f"Not written: score did not beat the saved best of "
+            f"{previous_best}/100. Incorporate the remaining gaps and try again."
         )
         return
 
-    print(f"Best score: {best_score}/100 — band {band}")
-    write_tailored_generator(best_candidate, reflow_module)
+    print(f"NEW BEST - band {band}")
+    write_tailored_generator(candidate, reflow_module)
     output_pdf_path = render_tailored_resume()
     print(f"Rendered {output_pdf_path}")
+    save_reflow_state(score)
 
     candidate_name = "Candidate"
-    if original_resume.basics is not None and original_resume.basics.name:
-        candidate_name = original_resume.basics.name
-    write_result_markdown(
-        build_job_evaluation_markdown(best_evaluation, candidate_name)
-    )
+    if context.original_resume.basics is not None and context.original_resume.basics.name:
+        candidate_name = context.original_resume.basics.name
+    write_result_markdown(build_job_evaluation_markdown(evaluation, candidate_name))
     print(
         f"Wrote final tailoring recommendations (what's boosting your score and "
         f"what's keeping it from 100%) to {RESULT_FILE_PATH}"
     )
 
     used_potential_skills = find_used_potential_skills(
-        load_potential_skills(), best_candidate
+        load_potential_skills(), candidate
     )
     if used_potential_skills:
         print(
-            "\nPolish up before the interview — these rusty skills made it into "
+            "\nPolish up before the interview - these rusty skills made it into "
             "this tailored resume:"
         )
         for skill in used_potential_skills:
             print(f"  - {skill}")
+
+
+def _check_missing_soft_skills(
+    candidate: TailoredResume, missing_soft_skills: List[str]
+) -> List[str]:
+    # Rule 8: soft skills must be demonstrated in EXPERIENCE/PROJECTS bullets;
+    # the summary and skills lines do not count.
+    bullet_corpus = normalize_text(
+        "\n".join(
+            bullet
+            for entry in candidate.experience + candidate.projects
+            for bullet in entry.bullets
+        )
+    )
+    corpus = bullet_corpus
+    problems = []
+    for skill in missing_soft_skills:
+        if normalize_text(skill) not in corpus:
+            problems.append(
+                f'missing soft skill "{skill}" must appear verbatim in a bullet '
+                "(EXPERIENCE or PROJECTS), demonstrated in action"
+            )
+    return problems
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate and regrade agent-written tailored resume candidates. "
+            "Run 'python score.py' first."
+        )
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--show-context",
+        action="store_true",
+        help="Print the tailoring context: skill gaps, current resume "
+        "content, and the skills bank.",
+    )
+    mode.add_argument(
+        "--candidate",
+        metavar="PATH",
+        help="Path to a candidate JSON file to validate and regrade.",
+    )
+    args = parser.parse_args()
+
+    if args.show_context:
+        show_context()
+    else:
+        evaluate_candidate(args.candidate)
 
 
 if __name__ == "__main__":
